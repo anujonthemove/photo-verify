@@ -1235,6 +1235,7 @@ body {
   text-transform: uppercase;
   color: var(--accent);
   margin-bottom: 22px;
+  position: relative;
 }
 .field { margin-bottom: 14px; }
 .field label {
@@ -1451,9 +1452,9 @@ body {
 </div>
 
 <!-- ── Setup Modal ───────────────────────────────── -->
-<div id="overlay" onclick="if(event.target===this)closeSetup()">
+<div id="overlay">
 <div id="modal">
-  <div class="modal-title">⚙ Configure PhotoVerify</div>
+  <div class="modal-title">⚙ Configure PhotoVerify<button onclick="closeSetup()" style="position:absolute;right:1.2rem;top:1.1rem;background:none;border:none;color:#aaa;font-size:1.4rem;cursor:pointer;line-height:1;" title="Close">✕</button></div>
 
   <div class="field">
     <label>Folder 1 — Source (read-only)</label>
