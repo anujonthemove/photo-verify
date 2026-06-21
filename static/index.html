@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PhotoVerify</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<!-- ── Topbar ────────────────────────────────────────────── -->
+<div id="topbar">
+  <div class="logo">Photo<em>Verify</em></div>
+  <div class="tab-switcher">
+    <button class="tab-btn active" id="tab-index"  onclick="switchTab('index')">Index</button>
+    <button class="tab-btn"        id="tab-verify" onclick="switchTab('verify')">Verify</button>
+  </div>
+  <div id="active-index-chip" class="chip chip-muted" style="display:none" title=""></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     INDEX PANEL
+═══════════════════════════════════════════════════════════ -->
+<div id="index-panel" class="tab-panel active">
+
+  <div class="idx-section">
+    <h3>Build New Index</h3>
+    <div class="idx-form-row">
+      <label>Name</label>
+      <input id="idx-name" type="text" placeholder="e.g. OnePlus-11R-Master" autocomplete="off">
+    </div>
+    <div class="idx-form-row">
+      <label>Folder</label>
+      <input id="idx-folder" type="text" placeholder="E:\Photos\Master\DCIM" autocomplete="off">
+    </div>
+    <button id="btn-build-index" onclick="buildIndex()">Build Index</button>
+    <div id="idx-build-progress">
+      <div id="idx-build-bar-wrap"><div id="idx-build-bar"></div></div>
+      <div id="idx-build-msg"></div>
+    </div>
+  </div>
+
+  <div class="idx-section">
+    <h3>Saved Indexes <button class="idx-refresh-btn" onclick="idxRefreshList()" title="Refresh">↺</button></h3>
+    <div id="idx-list"><div class="idx-empty">No indexes yet.</div></div>
+  </div>
+
+</div>
+
+<!-- ── Index Properties Modal ──────────────────────────────── -->
+<div id="idx-props-overlay" onclick="if(event.target===this)closeIdxProps()">
+  <div id="idx-props-modal">
+    <div class="modal-title">Index Properties
+      <button class="modal-close" onclick="closeIdxProps()">✕</button>
+    </div>
+    <table id="idx-props-table"></table>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     VERIFY PANEL
+═══════════════════════════════════════════════════════════ -->
+<div id="verify-panel" class="tab-panel">
+
+  <!-- Setup bar -->
+  <div id="v-setup">
+    <div class="v-setup-row">
+      <span class="v-lbl">Index</span>
+      <select id="v-index-select" onchange="vSelectIndex()">
+        <option value="">— select an index —</option>
+      </select>
+      <span class="v-lbl">Source folder</span>
+      <input id="v-src-input" type="text" placeholder="E:\Backups\OnePlus-2024" autocomplete="off">
+      <button class="v-btn-primary" onclick="vLoadSource()">Load</button>
+      <span class="v-setup-div"></span>
+      <span class="v-lbl">Resume session</span>
+      <select id="v-session-select">
+        <option value="">— pick session —</option>
+      </select>
+      <button class="v-btn-ghost" onclick="vResumeSession()">Resume</button>
+    </div>
+    <div class="v-setup-row">
+      <span class="v-lbl">Missing output</span>
+      <input id="v-missing-dir" type="text" placeholder="(defaults to photo-verify/missing)" autocomplete="off" style="max-width:340px">
+      <span class="v-setup-div"></span>
+      <button class="v-btn-primary" id="btn-v-scan"         onclick="vScanAll()"        disabled>▶ Scan All</button>
+      <button class="v-btn-danger"  id="btn-v-abort"        onclick="vAbortScan()"      style="display:none">■ Stop</button>
+      <button class="v-btn-red"     id="btn-v-save-missing" onclick="vSaveAllMissing()" disabled>Save All Missing</button>
+    </div>
+    <div id="v-scan-progress" style="display:none">
+      <div id="v-scan-bar-wrap"><div id="v-scan-bar"></div></div>
+      <span id="v-scan-msg"></span>
+    </div>
+  </div>
+
+  <!-- Stats bar -->
+  <div id="v-statsbar">
+    <div class="stat"><span class="stat-label">TOTAL</span><span class="stat-val blue"   id="v-st-total">0</span></div>
+    <div class="stat"><span class="stat-label">CHECKED</span><span class="stat-val"       id="v-st-checked">0</span></div>
+    <div class="stat"><span class="stat-label">FOUND</span><span class="stat-val green"   id="v-st-found">0</span></div>
+    <div class="stat"><span class="stat-label">MISSING</span><span class="stat-val red"   id="v-st-missing">0</span></div>
+    <div class="stat"><span class="stat-label">REVIEW</span><span class="stat-val yellow" id="v-st-review">0</span></div>
+  </div>
+
+  <!-- Main: sidebar + viewer (hidden until source loaded) -->
+  <div id="v-main">
+
+    <!-- Sidebar -->
+    <div id="v-sidebar">
+      <div id="v-sidebar-head">
+        <span id="v-sidebar-count" class="v-sidebar-count">0 files</span>
+        <div id="v-filters">
+          <button class="fbtn on" data-f="all"     onclick="vSetFilter('all')">ALL</button>
+          <button class="fbtn"    data-f="missing" onclick="vSetFilter('missing')">❌</button>
+          <button class="fbtn"    data-f="found"   onclick="vSetFilter('found')">✅</button>
+          <button class="fbtn"    data-f="review"  onclick="vSetFilter('review')">⚑</button>
+        </div>
+      </div>
+      <div id="v-list" onscroll="vRenderSidebar()">
+        <div id="v-list-inner"></div>
+      </div>
+    </div>
+
+    <!-- Viewer -->
+    <div id="v-viewer">
+
+      <div id="v-panels">
+        <!-- Source panel -->
+        <div class="panel">
+          <div class="panel-head">
+            <span class="ph-title">Source</span>
+            <span class="ph-name" id="v-src-meta">—</span>
+          </div>
+          <div class="panel-body">
+            <img    id="v-src-img" alt="source">
+            <video  id="v-src-vid" controls playsinline></video>
+            <div    id="v-src-ph" class="ph-empty"><div class="icon">📂</div>Select a file from the list</div>
+          </div>
+        </div>
+        <!-- Dest panel -->
+        <div class="panel">
+          <div class="panel-head">
+            <span class="ph-title">Match in Index</span>
+            <span id="v-match-chip" class="chip chip-muted">—</span>
+          </div>
+          <div class="panel-body">
+            <img    id="v-dest-img" alt="match">
+            <video  id="v-dest-vid" controls playsinline></video>
+            <div    id="v-dest-ph" class="ph-empty"><div class="icon">🗄</div>No file selected</div>
+          </div>
+          <div class="panel-dest-foot">
+            <span id="v-dest-meta" class="ph-name">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action bar -->
+      <div id="v-actionbar">
+        <button class="nav-btn" id="btn-v-prev" onclick="vNavigate(-1)" disabled>◀</button>
+        <span   id="v-nav-counter">— / —</span>
+        <button class="nav-btn" id="btn-v-next" onclick="vNavigate(1)"  disabled>▶</button>
+        <span id="v-match-info"></span>
+        <button class="action-btn" id="btn-v-deep"    onclick="vDoDeep()"           style="display:none">🔍 Hash Search</button>
+        <button class="action-btn" id="btn-v-missing" onclick="vDoMove('missing')"  disabled>✗ Save as Missing</button>
+        <button class="action-btn" id="btn-v-review"  onclick="vDoMove('review')"   disabled>⚑ Send to Review</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/app.js"></script>
+<script src="/static/js/index-tab.js"></script>
+<script src="/static/js/verify-tab.js"></script>
+</body>
+</html>
