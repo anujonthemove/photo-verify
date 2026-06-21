@@ -1,7 +1,9 @@
 # Project specific
+logs/
 cache/
 missing/
 review/
+config/
 *.code-workspace
 
 # Byte-compiled / optimized / DLL files
