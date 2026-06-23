@@ -11,7 +11,7 @@ from app.storage import (
 )
 from app.scanner import make_thumbnail, scan_all_media, get_exif_datetime
 from app.matcher import find_match, deep_find
-from app.constants import ALL_MEDIA_EXT, VIDEO_EXT
+from app.constants import ALL_MEDIA_EXT, VIDEO_EXT, MISSING_DIR, REVIEW_DIR
 from app.logger import _log
 
 import shutil
@@ -22,7 +22,8 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'static')
 def _serve_file(handler, path, mime):
     if not os.path.isfile(path):
         handler._404(); return
-    data = open(path, 'rb').read()
+    with open(path, 'rb') as _f:
+        data = _f.read()
     handler.send_response(200)
     handler.send_header('Content-Type', mime)
     handler.send_header('Content-Length', str(len(data)))
@@ -222,6 +223,8 @@ def dispatch(handler, u, qs):
             _state['cfg'].get('src', ''),
             _state.get('browse_root', ''),
             _get_active_index_folder(),
+            MISSING_DIR,
+            REVIEW_DIR,
         ]
         if not any(
             real_p == os.path.realpath(r) or

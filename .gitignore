@@ -1,9 +1,11 @@
 # Project specific
+sessions/
 logs/
 cache/
 missing/
 review/
 config/
+indexes/
 *.code-workspace
 
 # Byte-compiled / optimized / DLL files

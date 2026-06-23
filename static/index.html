@@ -36,6 +36,7 @@
       <input id="idx-folder" type="text" placeholder="E:\Photos\Master\DCIM" autocomplete="off">
     </div>
     <button id="btn-build-index" onclick="buildIndex()">Build Index</button>
+    <button id="btn-abort-index" class="danger" onclick="abortIndex()" style="display:none">■ Stop</button>
     <div id="idx-build-progress">
       <div id="idx-build-bar-wrap"><div id="idx-build-bar"></div></div>
       <div id="idx-build-msg"></div>
@@ -73,7 +74,7 @@
       </select>
       <span class="v-lbl">Source folder</span>
       <input id="v-src-input" type="text" placeholder="E:\Backups\OnePlus-2024" autocomplete="off">
-      <button class="v-btn-primary" onclick="vLoadSource()">Load</button>
+      <button class="v-btn-primary" id="btn-v-load" onclick="vLoadSource()">Load</button>
       <span class="v-setup-div"></span>
       <span class="v-lbl">Resume session</span>
       <select id="v-session-select">

@@ -2,19 +2,13 @@ import os
 import json
 import time
 from datetime import datetime
-from pathlib import Path
-
 try:
     import yaml
     YAML_OK = True
 except ImportError:
     YAML_OK = False
 
-from app.constants import (
-    CACHE_DIR, INDEX_DIR, SESSION_DIR, LOGS_DIR, CONFIG_DIR,
-    MISSING_DIR, REVIEW_DIR, THUMB_SIZE, THUMB_CACHE_MAX,
-    PHOTO_EXT, VIDEO_EXT, ALL_MEDIA_EXT, BASE_DIR, PORT,
-)
+from app.constants import CACHE_DIR, INDEX_DIR, SESSION_DIR, CONFIG_DIR
 from app.state import _state
 from app.logger import _log
 
@@ -226,23 +220,30 @@ def list_session_files() -> list:
             with open(full, encoding='utf-8') as f:
                 d = json.load(f)
             entries.append({
-                'file':    full,
-                'source':  d.get('source', ''),
-                'index':   os.path.basename(d.get('index_file', '')),
-                'started': d.get('started', ''),
-                'ts':      d.get('ts', 0),
-                'stats':   d.get('stats', {}),
+                'file':       full,
+                'source':     d.get('source', ''),
+                'index_file': d.get('index_file', ''),
+                'index':      os.path.basename(d.get('index_file', '')),
+                'started':    d.get('started', ''),
+                'ts':         d.get('ts', 0),
+                'stats':      d.get('stats', {}),
             })
         except Exception:
             pass
     return entries
 
 def _save_progress(src_path: str, status: str):
-    """Write one progress entry into the active cache or session file."""
+    """Write one progress entry into the active session or legacy cache file."""
+    _state['progress'][src_path] = status
+    # New flow: persist to session file
+    ses = _state.get('active_session', '')
+    if ses and os.path.isfile(ses):
+        _save_session()
+        return
+    # Legacy flow: persist to cache file
     cache_file = _state.get('active_cache', '')
     if not cache_file or not os.path.isfile(cache_file):
         return
-    _state['progress'][src_path] = status
     try:
         with open(cache_file) as f:
             data = json.load(f)

@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from app.state import _state
-from app.scanner import get_exif_datetime, file_md5, scan_photos
+from app.scanner import get_exif_datetime, file_md5, scan_all_media
 from app.constants import VIDEO_EXT
 
 
@@ -55,12 +55,14 @@ def deep_find(src_path: str) -> dict | None:
 
     # Scan dest, building hash cache as we go
     dest = _state['cfg']['dest']
-    for dp in scan_photos(dest):
-        if dp in hash_idx.values():
-            continue  # already cached this path → different hash
+    cached_paths = set(hash_idx.values())  # build once — O(n) not O(n²)
+    for dp in scan_all_media(dest):
+        if dp in cached_paths:
+            continue
         dh = file_md5(dp)
         if dh:
             hash_idx[dh] = dp
+            cached_paths.add(dp)
             if dh == src_hash:
                 return {'method': 'hash', 'path': dp, 'n': 1}
 

@@ -76,14 +76,22 @@ async function vLoadSource() {
   if (!idxFile) { alert('Select a master index first.'); return; }
   if (!src)     { alert('Enter the source folder path.'); return; }
 
-  const r = await post('/api/new_session', {index_file: idxFile, source: src});
-  if (!r.ok) { alert(r.msg); return; }
+  const btn = document.getElementById('btn-v-load');
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  try {
+    const r = await post('/api/new_session', {index_file: idxFile, source: src});
+    if (!r.ok) { alert(r.msg); return; }
 
-  V.photos = []; V.progress = {}; V.matchCache = {}; V.current = -1;
-  await _vLoadAllPhotos();
-  vUpdateFilter();
-  vUpdateStats();
-  document.getElementById('btn-v-scan').disabled = V.photos.length === 0;
+    V.photos = []; V.progress = {}; V.matchCache = {}; V.current = -1;
+    await _vLoadAllPhotos();
+    vUpdateFilter();
+    vUpdateStats();
+    document.getElementById('btn-v-scan').disabled = V.photos.length === 0;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Load';
+  }
 }
 
 async function _vLoadAllPhotos() {
@@ -136,7 +144,7 @@ function vRenderSidebar() {
   const first = Math.max(0, Math.floor(scrollTop / PL_ROW_H) - 3);
   const last  = Math.min(total - 1, Math.ceil((scrollTop + viewH) / PL_ROW_H) + 3);
 
-  // Remove rows outside visible range, keep ones inside
+  // Remove rows outside visible range; keep ones inside only if they represent the same photo
   const existing = {};
   inner.querySelectorAll('.pl-item').forEach(el => {
     const fi = +el.dataset.fi;
@@ -145,14 +153,20 @@ function vRenderSidebar() {
   });
 
   for (let fi = first; fi <= last; fi++) {
-    if (existing[fi]) {
-      // Update active class in place
-      const gi = V.filtered[fi];
-      existing[fi].classList.toggle('current', gi === V.current);
-      continue;
-    }
-    const gi     = V.filtered[fi];
+    const gi = V.filtered[fi];
     if (gi === undefined) continue;
+    if (existing[fi]) {
+      if (+existing[fi].dataset.gi === gi) {
+        // Same photo at same position — only update active highlight and dot color
+        existing[fi].classList.toggle('current', gi === V.current);
+        const status = V.progress[V.photos[gi].path] || 'unknown';
+        const dot = existing[fi].querySelector('.pl-dot');
+        if (dot) dot.className = 'pl-dot dot-' + status;
+        continue;
+      }
+      // Different photo at same visual slot (filter changed) — discard and recreate
+      existing[fi].remove();
+    }
     const photo  = V.photos[gi];
     if (!photo) continue;
     const status = V.progress[photo.path] || 'unknown';
@@ -161,6 +175,7 @@ function vRenderSidebar() {
     const div = document.createElement('div');
     div.className = 'pl-item' + (active ? ' current' : '');
     div.dataset.fi = fi;
+    div.dataset.gi = gi;
     div.style.top  = (fi * PL_ROW_H) + 'px';
     div.title = photo.path;
 
@@ -206,19 +221,13 @@ async function vShowPhoto(gi) {
   if (fi >= 0) vScrollSidebarTo(fi);
   _vUpdateNavButtons();
 
-  // Load EXIF info for src meta line
-  const info = await get('/api/photo?i=' + gi);
-  document.getElementById('v-src-meta').textContent =
-    photo.name + ' · ' + fmtSize(info.size || 0) + ' · ' + (info.exif_dt || '—');
-
-  // Render source
+  // Show source immediately — don't block on EXIF
+  document.getElementById('v-src-meta').textContent = photo.name + ' · …';
   _vShowSrc(gi, photo.path);
-
-  // Enable action buttons
   document.getElementById('btn-v-missing').disabled = false;
   document.getElementById('btn-v-review').disabled  = false;
 
-  // Match
+  // Apply cached match result instantly, or fire a match request
   if (V.matchCache.hasOwnProperty(gi)) {
     _vApplyMatch(gi, V.matchCache[gi]);
   } else {
@@ -226,16 +235,20 @@ async function vShowPhoto(gi) {
     document.getElementById('v-match-chip').className = 'chip chip-muted';
     document.getElementById('v-match-chip').textContent = '—';
     const r = await get('/api/match?i=' + gi);
+    if (V.current !== gi) return; // user navigated away while waiting
     V.matchCache[gi] = r.match || null;
-    if (r.match) {
-      V.progress[photo.path] = 'found';
-    } else {
-      V.progress[photo.path] = 'missing';
-    }
+    V.progress[photo.path] = r.match ? 'found' : 'missing';
     _vApplyMatch(gi, r.match || null);
     vUpdateStats();
     vRenderSidebar();
   }
+
+  // Load EXIF/size in background — updates meta line once resolved
+  get('/api/photo?i=' + gi).then(info => {
+    if (V.current !== gi) return;
+    document.getElementById('v-src-meta').textContent =
+      photo.name + ' · ' + fmtSize(info.size || 0) + ' · ' + (info.exif_dt || '—');
+  });
 }
 
 function _vShowSrc(gi, path) {
@@ -346,9 +359,9 @@ async function vDoDeep() {
 // ── Move actions ────────────────────────────────────────────────
 async function vDoMove(type) {
   if (V.current < 0) return;
-  const r = await post('/api/move', {i: V.current, type});
-  if (!r.ok) { alert(r.result || r.msg || 'Move failed'); return; }
   const photo = V.photos[V.current];
+  const r = await post('/api/move', {path: photo.path, type});
+  if (!r.ok) { alert(r.result || r.msg || 'Move failed'); return; }
   V.progress[photo.path] = type;
   vUpdateFilter();
   vUpdateStats();
@@ -358,16 +371,24 @@ async function vSaveAllMissing() {
   const missingDir = v('v-missing-dir');
   if (missingDir) await post('/api/configure', {cfg: {missing_dir: missingDir}});
 
-  const indices = V.photos
-    .map((p, i) => ({i, s: V.progress[p.path]}))
-    .filter(x => x.s === 'missing')
-    .map(x => x.i);
+  const paths = V.photos
+    .filter(p => V.progress[p.path] === 'missing')
+    .map(p => p.path);
 
-  if (!indices.length) { alert('No missing files to save. Run Scan All first.'); return; }
+  if (!paths.length) { alert('No missing files to save. Run Scan All first.'); return; }
 
-  const r = await post('/api/bulk_action', {indices, type: 'missing'});
+  const r = await post('/api/bulk_action', {paths, type: 'missing'});
   if (r.ok) {
-    alert('Saved ' + r.saved + ' file(s) to:\n' + (r.out_folder || 'output folder'));
+    const lines = ['Saved ' + r.saved + ' file(s).'];
+    if (r.skipped)               lines.push(r.skipped + ' already existed (skipped).');
+    if (r.failed && r.failed.length) lines.push(r.failed.length + ' failed to copy.');
+    lines.push('');
+    lines.push('Output: ' + (r.out_folder || 'missing folder'));
+    if (r.failed && r.failed.length) {
+      lines.push('');
+      lines.push('First failure: ' + r.failed[0].msg);
+    }
+    alert(lines.join('\n'));
   } else {
     alert('Error: ' + (r.msg || 'unknown'));
   }
@@ -409,12 +430,11 @@ async function vScanAll() {
 
   while (offset < n && !V.abort) {
     const r = await post('/api/batch_match', {start: offset, count: CHUNK});
-    if (!r.ok) break;
+    if (!r.ok) { alert('Scan error: ' + (r.msg || 'unknown')); break; }
     for (const res of r.results) {
       V.progress[res.path] = res.status;
-      if (res.status === 'found' && !V.matchCache.hasOwnProperty(res.i)) {
-        // Store a minimal placeholder so the per-photo view skips the API call
-        V.matchCache[res.i] = {method: res.method || '?', path: '', n: 0};
+      if (res.status === 'found' && res.match_path) {
+        V.matchCache[res.i] = {method: res.method, path: res.match_path, n: res.match_n || 1};
       }
     }
     offset += r.results.length;
@@ -441,12 +461,22 @@ function vAbortScan() {
   document.getElementById('btn-v-abort').style.display = 'none';
 }
 
+// ── Keyboard navigation ─────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (document.getElementById('verify-panel').classList.contains('active')) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); vNavigate(1); }
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   { e.preventDefault(); vNavigate(-1); }
+  }
+});
+
 // ── Session management ──────────────────────────────────────────
 async function vLoadSessionList() {
-  const r   = await get('/api/list_sessions');
-  const sel = document.getElementById('v-session-select');
+  const r          = await get('/api/list_sessions');
+  const sel        = document.getElementById('v-session-select');
+  const activeIdx  = document.getElementById('v-index-select').value;
   sel.innerHTML = '<option value="">— pick session —</option>';
-  (r.sessions || []).forEach(s => {
+  (r.sessions || []).filter(s => !activeIdx || s.index_file === activeIdx).forEach(s => {
     const opt = document.createElement('option');
     opt.value = s.file;
     const src   = basename(s.source || '');

@@ -63,6 +63,8 @@ except ImportError:
 PORT        = 7734
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR   = os.path.join(BASE_DIR, "cache")
+INDEX_DIR   = os.path.join(BASE_DIR, "indexes")
+SESSION_DIR = os.path.join(BASE_DIR, "sessions")
 LOGS_DIR    = os.path.join(BASE_DIR, "logs")
 CONFIG_DIR  = os.path.join(BASE_DIR, "config")
 MISSING_DIR = os.path.join(BASE_DIR, "missing")
@@ -76,6 +78,13 @@ PHOTO_EXT = {
     '.tiff', '.tif', '.bmp', '.webp', '.gif',
     '.orf', '.rw2', '.pef', '.srw', '.x3f',
 }
+
+VIDEO_EXT = {
+    '.mp4', '.mov', '.3gp', '.mkv', '.avi',
+    '.m4v', '.wmv', '.flv', '.webm',
+}
+
+ALL_MEDIA_EXT = PHOTO_EXT | VIDEO_EXT
 
 # ─── Global App State ─────────────────────────────────────────────────────────
 
@@ -92,6 +101,7 @@ _state = {
         'fname': {},            # lowercase_basename → [path, ...]
         'exif':  {},            # "YYYY:MM:DD HH:MM:SS|size" → [path, ...]
         'hash':  {},            # md5hex → path  (built lazily)
+        'video': {},            # "filename|size" → [path, ...]
     },
     'idx_status': {
         'phase':   'idle',      # idle | scanning | building | done | error
@@ -101,20 +111,18 @@ _state = {
     },
     'action_log': [],
     'progress':    {},          # src_path → 'found'|'missing'|'review'
-    'active_cache': '',         # path to the currently-active cache file
-    'last_idx':     0,          # last viewed photo index, persisted to cache
-    'session_ts':   '',         # timestamp subfolder for output files this session
+    'active_cache':   '',        # path to the currently-active legacy cache file
+    'active_index':   '',        # path to the currently-loaded master index file
+    'active_session': '',        # path to the current session file
+    'browse_root':    '',        # folder the Browse tab is currently rooted at
+    'last_idx':       0,         # last viewed photo index
+    'session_ts':     '',        # timestamp subfolder for output files this session
     '_thumb_cache':  {},        # path → jpeg_bytes  (LRU-ish)
     '_thumb_order':  [],        # insertion order for eviction
     '_state_lock':   threading.Lock(),
 }
 
 # ─── Cache helpers ───────────────────────────────────────────────────────────
-
-def _new_cache_path() -> str:
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.join(CACHE_DIR, f"{stamp}_photoverify_cache.json")
 
 def list_cache_files() -> list:
     """Return cache entries sorted newest-first."""
@@ -139,6 +147,54 @@ def list_cache_files() -> list:
         except Exception:
             pass
     return entries
+
+def list_index_files() -> list:
+    """Return saved master indexes sorted newest-first."""
+    if not os.path.isdir(INDEX_DIR):
+        return []
+    entries = []
+    for fname in sorted(os.listdir(INDEX_DIR), reverse=True):
+        if not fname.endswith('_index.json'):
+            continue
+        full = os.path.join(INDEX_DIR, fname)
+        try:
+            with open(full, encoding='utf-8') as f:
+                meta = json.load(f)
+            entries.append({
+                'file':   full,
+                'name':   meta.get('name', fname),
+                'folder': meta.get('folder', ''),
+                'total':  meta.get('total', 0),
+                'built':  meta.get('built', ''),
+                'ts':     meta.get('ts', 0),
+            })
+        except Exception:
+            pass
+    return entries
+
+def _load_index(index_file: str):
+    """Load a master index file into _state['dest_idx']."""
+    with open(index_file, encoding='utf-8') as f:
+        data = json.load(f)
+    # Support legacy cache format (no 'name' field)
+    _state['dest_idx']['fname'] = data.get('fname', {})
+    _state['dest_idx']['exif']  = data.get('exif',  {})
+    _state['dest_idx']['video'] = data.get('video', {})
+    _state['dest_idx']['hash']  = {}
+    _state['active_index'] = index_file
+    return data
+
+def _get_active_index_folder() -> str:
+    """Return the master folder path from the currently loaded index, or ''."""
+    idx_file = _state.get('active_index', '')
+    if not idx_file or not os.path.isfile(idx_file):
+        return ''
+    try:
+        with open(idx_file, encoding='utf-8') as f:
+            data = json.load(f)
+        return data.get('folder', '') or data.get('dest', '')
+    except Exception:
+        return ''
 
 def _config_path() -> str:
     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -198,8 +254,91 @@ def _persist_config():
     except Exception as e:
         print(f"  Config save failed: {e}")
 
+def _new_session(index_file: str, source: str) -> str:
+    """Create a new session JSON and activate it. Returns session file path."""
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    ts_str   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ses_path = os.path.join(SESSION_DIR, f"{ts_str}_session.json")
+    data = {
+        'index_file': index_file,
+        'source':     source,
+        'ts':         time.time(),
+        'started':    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'progress':   {},
+        'last_idx':   0,
+        'stats':      {'found': 0, 'missing': 0, 'review': 0},
+    }
+    with open(ses_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, separators=(',', ':'), ensure_ascii=False)
+    _state['active_session'] = ses_path
+    _state['session_ts']     = ts_str
+    _state['progress']       = {}
+    _state['last_idx']       = 0
+    return ses_path
+
+def _save_session():
+    """Persist current progress/stats to the active session file."""
+    ses = _state.get('active_session', '')
+    if not ses:
+        return
+    try:
+        with open(ses, encoding='utf-8') as f:
+            data = json.load(f)
+        data['progress'] = _state['progress']
+        data['last_idx'] = _state['last_idx']
+        data['stats']    = {
+            'found':   sum(1 for s in _state['progress'].values() if s == 'found'),
+            'missing': sum(1 for s in _state['progress'].values() if s == 'missing'),
+            'review':  sum(1 for s in _state['progress'].values() if s == 'review'),
+        }
+        with open(ses, 'w', encoding='utf-8') as f:
+            json.dump(data, f, separators=(',', ':'), ensure_ascii=False)
+    except Exception as e:
+        _log(f"Session save failed: {e}")
+
+def _load_session(ses_path: str) -> dict:
+    """Load a session file, restore index + source + progress into _state."""
+    with open(ses_path, encoding='utf-8') as f:
+        data = json.load(f)
+    idx_file = data.get('index_file', '')
+    if idx_file and os.path.isfile(idx_file):
+        _load_index(idx_file)
+    source = data.get('source', '')
+    if source:
+        _state['cfg']['src']  = source
+        _state['src_photos']  = scan_all_media(source) if os.path.isdir(source) else []
+    _state['progress']       = data.get('progress', {})
+    _state['last_idx']       = data.get('last_idx', 0)
+    _state['active_session'] = ses_path
+    _state['session_ts']     = '_'.join(os.path.basename(ses_path).split('_')[:2])
+    return data
+
+def list_session_files() -> list:
+    """Return sessions sorted newest-first."""
+    if not os.path.isdir(SESSION_DIR):
+        return []
+    entries = []
+    for fname in sorted(os.listdir(SESSION_DIR), reverse=True):
+        if not fname.endswith('_session.json'):
+            continue
+        full = os.path.join(SESSION_DIR, fname)
+        try:
+            with open(full, encoding='utf-8') as f:
+                d = json.load(f)
+            entries.append({
+                'file':    full,
+                'source':  d.get('source', ''),
+                'index':   os.path.basename(d.get('index_file', '')),
+                'started': d.get('started', ''),
+                'ts':      d.get('ts', 0),
+                'stats':   d.get('stats', {}),
+            })
+        except Exception:
+            pass
+    return entries
+
 def _save_progress(src_path: str, status: str):
-    """Write one progress entry into the active cache file."""
+    """Write one progress entry into the active cache or session file."""
     cache_file = _state.get('active_cache', '')
     if not cache_file or not os.path.isfile(cache_file):
         return
@@ -255,6 +394,19 @@ def scan_photos(folder: str) -> list:
         print(f"  Permission denied: {e}")
     return sorted(results)
 
+def scan_all_media(folder: str) -> list:
+    """Recursively scan folder for all media (photos + videos); return sorted paths."""
+    results = []
+    try:
+        for root, dirs, files in os.walk(folder, followlinks=False):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for f in files:
+                if Path(f).suffix.lower() in ALL_MEDIA_EXT:
+                    results.append(os.path.join(root, f))
+    except PermissionError as e:
+        print(f"  Permission denied: {e}")
+    return sorted(results)
+
 def get_exif_datetime(path: str):
     """Return EXIF DateTimeOriginal string or None."""
     if not PIL_OK:
@@ -282,8 +434,26 @@ def file_md5(path: str):
     except Exception:
         return None
 
+_VIDEO_PLACEHOLDER: bytes | None = None
+
+def _get_video_placeholder() -> bytes | None:
+    global _VIDEO_PLACEHOLDER
+    if _VIDEO_PLACEHOLDER is not None:
+        return _VIDEO_PLACEHOLDER
+    if PIL_OK:
+        from PIL import ImageDraw
+        img = Image.new('RGB', (320, 320), color=(28, 30, 38))
+        draw = ImageDraw.Draw(img)
+        draw.polygon([(108, 88), (108, 232), (242, 160)], fill=(160, 162, 180))
+        buf = io.BytesIO()
+        img.save(buf, 'JPEG', quality=84)
+        _VIDEO_PLACEHOLDER = buf.getvalue()
+    return _VIDEO_PLACEHOLDER
+
 def make_thumbnail(path: str, size: int = THUMB_SIZE) -> bytes | None:
     """Render a JPEG thumbnail, honouring EXIF rotation."""
+    if Path(path).suffix.lower() in VIDEO_EXT:
+        return _get_video_placeholder()
     if not PIL_OK:
         return None
     cache = _state['_thumb_cache']
@@ -322,71 +492,85 @@ def make_thumbnail(path: str, size: int = THUMB_SIZE) -> bytes | None:
 
 # ─── Indexing ─────────────────────────────────────────────────────────────────
 
-def _index_worker():
-    st  = _state['idx_status']
-    cfg = _state['cfg']
-    dest = cfg['dest']
+def _build_index_worker(folder: str, name: str):
+    """Build a master index for folder and save to indexes/."""
+    st = _state['idx_status']
 
-    if not dest or not os.path.isdir(dest):
-        st.update({'phase': 'error', 'msg': f'Destination folder not accessible: {dest}'})
+    if not folder or not os.path.isdir(folder):
+        st.update({'phase': 'error', 'msg': f'Folder not accessible: {folder}'})
         return
 
-    # ── Phase 1: Scan ──
+    # ── Phase 1: Scan all media (photos + videos) ──
     st.update({'phase': 'scanning', 'current': 0, 'total': 0,
-               'msg': 'Scanning destination folder...'})
-    photos = scan_photos(dest)
-    n = len(photos)
-    st.update({'total': n, 'msg': f'Found {n} photos. Building index…'})
+               'msg': f'Scanning {folder}…'})
+    media = scan_all_media(folder)
+    n = len(media)
+    st.update({'total': n, 'msg': f'Found {n} files. Building index…'})
 
-    # ── Phase 2: Build filename + EXIF index ──
+    # ── Phase 2: Build indexes ──
     st['phase'] = 'building'
     fname_idx: dict = {}
     exif_idx:  dict = {}
+    video_idx: dict = {}
 
-    for i, path in enumerate(photos):
+    for i, path in enumerate(media):
         st['current'] = i + 1
+        ext = Path(path).suffix.lower()
+        lname = Path(path).name.lower()
 
-        # Filename
-        fname_idx.setdefault(Path(path).name.lower(), []).append(path)
+        fname_idx.setdefault(lname, []).append(path)
 
-        # EXIF + size
-        dt = get_exif_datetime(path)
-        if dt:
+        if ext in VIDEO_EXT:
             sz  = os.path.getsize(path)
-            key = f"{dt}|{sz}"
-            exif_idx.setdefault(key, []).append(path)
+            key = f"{lname}|{sz}"
+            video_idx.setdefault(key, []).append(path)
+        else:
+            dt = get_exif_datetime(path)
+            if dt:
+                sz  = os.path.getsize(path)
+                key = f"{dt}|{sz}"
+                exif_idx.setdefault(key, []).append(path)
 
     _state['dest_idx']['fname'] = fname_idx
     _state['dest_idx']['exif']  = exif_idx
+    _state['dest_idx']['video'] = video_idx
 
-    # ── Save cache with timestamped filename ──
+    # ── Save index ──
+    os.makedirs(INDEX_DIR, exist_ok=True)
+    ts_str  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe    = "".join(c if c.isalnum() or c in '-_' else '_' for c in name)
+    idx_path = os.path.join(INDEX_DIR, f"{ts_str}_{safe}_index.json")
     try:
-        cache_path = _new_cache_path()
-        with open(cache_path, 'w') as f:
+        with open(idx_path, 'w', encoding='utf-8') as f:
             json.dump({
-                'src':      cfg['src'],
-                'dest':     dest,
-                'fname':    fname_idx,
-                'exif':     exif_idx,
-                'ts':       time.time(),
-                'progress': {},
-            }, f, separators=(',', ':'))
-        st['last_cache'] = cache_path
-        _state['active_cache'] = cache_path
-        _state['progress'] = {}
-        # Pin session_ts to the cache filename so config yaml shares the same timestamp
-        _state['session_ts'] = '_'.join(os.path.basename(cache_path).split('_')[:2])
+                'name':   name,
+                'folder': folder,
+                'ts':     time.time(),
+                'built':  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'total':  n,
+                'fname':  fname_idx,
+                'exif':   exif_idx,
+                'video':  video_idx,
+            }, f, separators=(',', ':'), ensure_ascii=False)
+        _state['active_index'] = idx_path
+        st['last_index'] = idx_path
     except Exception as e:
-        print(f"  Cache write failed: {e}")
+        st.update({'phase': 'error', 'msg': f'Index write failed: {e}'})
+        return
 
-    n_f = len(fname_idx)
-    n_e = len(exif_idx)
     st.update({
         'phase':   'done',
         'current': n, 'total': n,
-        'msg':     f'Done — {n} photos indexed '
-                   f'({n_f} unique filenames, {n_e} EXIF entries).'
+        'msg':     f'Done — {n} files indexed ({len(fname_idx)} filenames, '
+                   f'{len(exif_idx)} EXIF, {len(video_idx)} video entries).',
     })
+
+def _index_worker():
+    """Legacy wrapper — builds index using configured dest folder."""
+    _build_index_worker(
+        folder=_state['cfg'].get('dest', ''),
+        name=Path(_state['cfg'].get('dest', 'index')).name or 'index',
+    )
 
 # ─── Matching ─────────────────────────────────────────────────────────────────
 
@@ -555,13 +739,26 @@ class PhotoVerifyHandler(BaseHTTPRequestHandler):
             self.wfile.write(html)
 
         elif u.path == '/api/state':
+            active_idx = _state.get('active_index', '')
+            idx_meta   = {}
+            if active_idx and os.path.isfile(active_idx):
+                try:
+                    with open(active_idx, encoding='utf-8') as f:
+                        d = json.load(f)
+                    idx_meta = {'name': d.get('name',''), 'total': d.get('total', 0),
+                                'folder': d.get('folder', d.get('dest', ''))}
+                except Exception:
+                    pass
             self._json({
-                'cfg':          _state['cfg'],
-                'src_count':    len(_state['src_photos']),
-                'idx':          _state['idx_status'],
-                'pil':          PIL_OK,
-                'log_count':    len(_state['action_log']),
-                'active_cache': _state.get('active_cache', ''),
+                'cfg':           _state['cfg'],
+                'src_count':     len(_state['src_photos']),
+                'idx':           _state['idx_status'],
+                'pil':           PIL_OK,
+                'log_count':     len(_state['action_log']),
+                'active_cache':  _state.get('active_cache', ''),
+                'active_index':  active_idx,
+                'active_index_meta': idx_meta,
+                'browse_root':   _state.get('browse_root', ''),
             })
 
         elif u.path == '/api/list':
@@ -618,6 +815,15 @@ class PhotoVerifyHandler(BaseHTTPRequestHandler):
         elif u.path == '/api/list_caches':
             self._json({'caches': list_cache_files()})
 
+        elif u.path == '/api/list_indexes':
+            self._json({'indexes': list_index_files()})
+
+        elif u.path == '/api/list_sessions':
+            self._json({'sessions': list_session_files()})
+
+        elif u.path == '/api/idx_status':
+            self._json(_state['idx_status'])
+
         # ── Thumbnails ────────────────────────────────────────────────────────
 
         elif u.path == '/thumb/src':
@@ -642,6 +848,102 @@ class PhotoVerifyHandler(BaseHTTPRequestHandler):
                     self._404()
             else:
                 self._404()
+
+        elif u.path == '/api/browse_tree':
+            req_path = unquote(qs.get('path', [''])[0])
+            if not req_path:
+                # v2: prefer browse_root override, then active index folder, then cfg.src
+                req_path = (_state.get('browse_root', '')
+                            or _get_active_index_folder()
+                            or _state['cfg'].get('src', ''))
+            if not req_path or not os.path.isdir(req_path):
+                self._json({'ok': False, 'msg': 'Invalid path', 'dirs': [], 'files': []})
+                return
+            dirs, files = [], []
+            try:
+                with os.scandir(req_path) as it:
+                    for entry in sorted(it, key=lambda e: e.name.lower()):
+                        if entry.name.startswith('.'):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            dirs.append({'name': entry.name, 'path': entry.path})
+                        elif entry.is_file(follow_symlinks=False):
+                            ext = Path(entry.name).suffix.lower()
+                            if ext in ALL_MEDIA_EXT:
+                                st = entry.stat()
+                                files.append({
+                                    'name':     entry.name,
+                                    'path':     entry.path,
+                                    'is_video': ext in VIDEO_EXT,
+                                    'size':     st.st_size,
+                                    'mtime':    st.st_mtime,
+                                })
+            except PermissionError:
+                pass
+            self._json({'ok': True, 'path': req_path, 'dirs': dirs, 'files': files})
+
+        elif u.path == '/api/media':
+            p = unquote(qs.get('path', [''])[0])
+            if not p or not os.path.isfile(p):
+                self._404()
+                return
+            # Security: file must be under one of the known roots
+            real_p = os.path.realpath(p)
+            allowed_roots = [
+                _state['cfg'].get('src', ''),
+                _state.get('browse_root', ''),
+                _get_active_index_folder(),
+            ]
+            if not any(
+                real_p == os.path.realpath(r) or
+                real_p.startswith(os.path.realpath(r) + os.sep)
+                for r in allowed_roots if r
+            ):
+                self.send_response(403)
+                self.end_headers()
+                return
+            ext  = Path(p).suffix.lower()
+            mime = {
+                '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                '.gif': 'image/gif',  '.webp': 'image/webp', '.heic': 'image/heic',
+                '.mp4': 'video/mp4',  '.mov': 'video/quicktime', '.m4v': 'video/mp4',
+                '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
+                '.3gp': 'video/3gpp', '.wmv': 'video/x-ms-wmv',
+                '.webm': 'video/webm', '.flv': 'video/x-flv',
+            }.get(ext, 'application/octet-stream')
+            file_size = os.path.getsize(p)
+            range_hdr = self.headers.get('Range', '')
+            if range_hdr and range_hdr.startswith('bytes='):
+                # Partial content (needed for video seeking)
+                byte_range = range_hdr[6:].split('-')
+                start = int(byte_range[0]) if byte_range[0] else 0
+                end   = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else file_size - 1
+                end   = min(end, file_size - 1)
+                length = end - start + 1
+                self.send_response(206)
+                self.send_header('Content-Type', mime)
+                self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+                self.send_header('Content-Length', str(length))
+                self.send_header('Accept-Ranges', 'bytes')
+                self.end_headers()
+                with open(p, 'rb') as f:
+                    f.seek(start)
+                    remaining = length
+                    while remaining:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            else:
+                self.send_response(200)
+                self.send_header('Content-Type', mime)
+                self.send_header('Content-Length', str(file_size))
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Cache-Control', 'max-age=60')
+                self.end_headers()
+                with open(p, 'rb') as f:
+                    shutil.copyfileobj(f, self.wfile)
 
         else:
             self._404()
@@ -695,12 +997,103 @@ class PhotoVerifyHandler(BaseHTTPRequestHandler):
                 self._json({'ok': False, 'msg': 'Set destination folder first.'})
                 return
             # Reset
-            _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}}
+            _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}, 'video': {}}
             _state['idx_status'] = {
                 'phase': 'starting', 'current': 0, 'total': 0, 'msg': 'Starting…'
             }
             threading.Thread(target=_index_worker, daemon=True).start()
             self._json({'ok': True})
+
+        elif u.path == '/api/build_index':
+            folder = body.get('folder', '').strip()
+            name   = body.get('name', '').strip()
+            if not folder or not os.path.isdir(folder):
+                self._json({'ok': False, 'msg': f'Folder not found: {folder}'})
+                return
+            if not name:
+                name = Path(folder).name or 'index'
+            if _state['idx_status']['phase'] in ('scanning', 'building'):
+                self._json({'ok': False, 'msg': 'Already indexing — please wait.'})
+                return
+            _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}, 'video': {}}
+            _state['idx_status'] = {
+                'phase': 'starting', 'current': 0, 'total': 0, 'msg': 'Starting…'
+            }
+            threading.Thread(
+                target=_build_index_worker, args=(folder, name), daemon=True
+            ).start()
+            self._json({'ok': True})
+
+        elif u.path == '/api/load_index':
+            idx_file = body.get('file', '').strip()
+            if not idx_file or not os.path.isfile(idx_file):
+                self._json({'ok': False, 'msg': f'Index file not found: {idx_file}'})
+                return
+            try:
+                data = _load_index(idx_file)
+                self._json({
+                    'ok':     True,
+                    'name':   data.get('name', ''),
+                    'total':  data.get('total', 0),
+                    'folder': data.get('folder', ''),
+                })
+            except Exception as e:
+                self._json({'ok': False, 'msg': str(e)})
+
+        elif u.path == '/api/new_session':
+            idx_file = body.get('index_file', '').strip()
+            source   = body.get('source', '').strip()
+            if not idx_file or not os.path.isfile(idx_file):
+                self._json({'ok': False, 'msg': 'Load an index first.'})
+                return
+            if not source or not os.path.isdir(source):
+                self._json({'ok': False, 'msg': f'Source folder not found: {source}'})
+                return
+            _load_index(idx_file)
+            _state['cfg']['src']  = source
+            _state['src_photos']  = scan_all_media(source)
+            ses_path = _new_session(idx_file, source)
+            _persist_config()
+            self._json({
+                'ok':      True,
+                'session': ses_path,
+                'n_src':   len(_state['src_photos']),
+            })
+
+        elif u.path == '/api/load_session':
+            ses_file = body.get('file', '').strip()
+            if not ses_file or not os.path.isfile(ses_file):
+                self._json({'ok': False, 'msg': f'Session file not found: {ses_file}'})
+                return
+            try:
+                data     = _load_session(ses_file)
+                progress = _state['progress']
+                n_src    = len(_state['src_photos'])
+                self._json({
+                    'ok':      True,
+                    'n_src':   n_src,
+                    'last_idx': data.get('last_idx', 0),
+                    'progress': {k: v for k, v in list(progress.items())[:500]},
+                    'stats':   data.get('stats', {}),
+                    'source':  data.get('source', ''),
+                    'index':   os.path.basename(data.get('index_file', '')),
+                    'cfg':     _state['cfg'],
+                })
+            except Exception as e:
+                self._json({'ok': False, 'msg': str(e)})
+
+        elif u.path == '/api/delete_index':
+            idx_file = body.get('file', '').strip()
+            # Security: only allow deleting files inside INDEX_DIR
+            if not idx_file or not os.path.abspath(idx_file).startswith(os.path.abspath(INDEX_DIR)):
+                self._json({'ok': False, 'msg': 'Invalid path.'})
+                return
+            try:
+                if os.path.isfile(idx_file):
+                    os.remove(idx_file)
+                self._json({'ok': True})
+            except Exception as e:
+                self._json({'ok': False, 'msg': str(e)})
 
         elif u.path == '/api/move':
             ok, result = do_action(body.get('i', -1), body.get('type', 'missing'))
@@ -788,14 +1181,18 @@ class PhotoVerifyHandler(BaseHTTPRequestHandler):
 
         elif u.path == '/api/batch_match':
             force   = body.get('force', False)
+            start   = int(body.get('start', 0))
+            count   = body.get('count', None)
             photos  = _state['src_photos']
             prog    = _state['progress']
             results = []
             found   = missing = skipped = 0
-            for i, path in enumerate(photos):
+            subset  = photos[start:start + count] if count is not None else photos[start:]
+            for j, path in enumerate(subset):
+                i = start + j
                 if not force and path in prog:
                     skipped += 1
-                    results.append({'i': i, 'status': prog[path], 'method': None})
+                    results.append({'i': i, 'path': path, 'status': prog[path], 'method': None})
                     continue
                 m = find_match(path)
                 if m:
@@ -805,21 +1202,35 @@ class PhotoVerifyHandler(BaseHTTPRequestHandler):
                     status = 'missing'
                     missing += 1
                 prog[path] = status
-                results.append({'i': i, 'status': status, 'method': m['method'] if m else None})
+                results.append({'i': i, 'path': path, 'status': status,
+                                'method': m['method'] if m else None})
             _state['progress'] = prog
-            cache_file = _state.get('active_cache', '')
-            if cache_file and os.path.isfile(cache_file):
-                try:
-                    with open(cache_file) as f:
-                        data = json.load(f)
-                    data['progress'] = prog
-                    with open(cache_file, 'w') as f:
-                        json.dump(data, f, separators=(',', ':'))
-                except Exception as e:
-                    _log(f"Batch match cache write failed: {e}")
+            # Persist to active session or legacy cache
+            ses = _state.get('active_session', '')
+            if ses and os.path.isfile(ses):
+                _save_session()
+            else:
+                cache_file = _state.get('active_cache', '')
+                if cache_file and os.path.isfile(cache_file):
+                    try:
+                        with open(cache_file, encoding='utf-8') as f:
+                            data = json.load(f)
+                        data['progress'] = prog
+                        with open(cache_file, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, separators=(',', ':'))
+                    except Exception as e:
+                        _log(f"Batch match cache write failed: {e}")
             self._json({'ok': True, 'results': results,
                         'found': found, 'missing': missing,
                         'skipped': skipped, 'total': len(photos)})
+
+        elif u.path == '/api/set_browse_root':
+            root = body.get('root', '').strip()
+            if root and os.path.isdir(root):
+                _state['browse_root'] = root
+                self._json({'ok': True, 'root': root})
+            else:
+                self._json({'ok': False, 'msg': f'Folder not found: {root}'})
 
         elif u.path == '/api/save_position':
             idx = body.get('idx', 0)
@@ -1368,6 +1779,116 @@ body {
 
 /* ── Utility ───────────────────────────────────────── */
 .sep { flex: 1; }
+
+/* ── Tab switcher ──────────────────────────────────── */
+.tab-switcher { display:flex; gap:2px; background:var(--bg); border:1px solid var(--border2); border-radius:6px; padding:2px; margin-left:8px; }
+.tab-btn { background:transparent; border:none; border-radius:4px; color:var(--muted2); font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:1px; padding:4px 14px; cursor:pointer; transition:all .15s; text-transform:uppercase; }
+.tab-btn:hover { color:var(--text); background:var(--panel); }
+.tab-btn.active { background:var(--accent); color:#fff; }
+
+/* ── Browse panel ──────────────────────────────────── */
+#browse-panel { display:none; flex:1; overflow:hidden; min-height:0; }
+#browse-panel.visible { display:flex; }
+#browse-tree { width:210px; flex-shrink:0; background:var(--surface); border-right:1px solid var(--border); overflow-y:auto; overflow-x:hidden; padding:8px 0; }
+.tree-node { display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px; user-select:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--muted2); transition:background .1s; padding:5px 10px; }
+.tree-node:hover { background:var(--panel); color:var(--text); }
+.tree-node.selected { background:var(--panel); color:var(--accent); }
+.tree-arrow { font-size:9px; width:12px; flex-shrink:0; display:inline-block; transition:transform .15s; }
+.tree-arrow.open { transform:rotate(90deg); }
+.tree-children { display:none; }
+.tree-children.open { display:block; }
+#browse-content { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+#browse-filterbar { display:flex; align-items:center; gap:8px; padding:0 14px; height:42px; background:var(--surface); border-bottom:1px solid var(--border); flex-shrink:0; }
+.filter-btn { background:transparent; border:1px solid var(--border2); border-radius:5px; color:var(--muted2); font-size:11px; font-family:var(--mono); padding:3px 10px; cursor:pointer; transition:all .15s; }
+.filter-btn:hover { background:var(--panel); color:var(--text); }
+.filter-btn.active { background:var(--panel); border-color:var(--accent); color:var(--accent); }
+#browse-path-label { font-family:var(--mono); font-size:10px; color:var(--muted); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#browse-count { font-family:var(--mono); font-size:10px; color:var(--muted); flex-shrink:0; }
+#browse-sort { background:var(--bg); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:11px; padding:3px 8px; cursor:pointer; }
+#browse-grid-wrap { flex:1; overflow-y:auto; padding:12px; }
+#browse-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
+.media-cell { position:relative; aspect-ratio:1; border-radius:6px; overflow:hidden; cursor:pointer; background:var(--panel); border:1px solid var(--border); transition:border-color .15s, transform .1s; }
+.media-cell:hover { border-color:var(--accent); transform:scale(1.02); }
+.media-cell img { width:100%; height:100%; object-fit:cover; display:block; }
+.video-badge { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.4); font-size:32px; pointer-events:none; }
+.cell-name { position:absolute; bottom:0; left:0; right:0; padding:4px 6px; background:rgba(0,0,0,.65); font-size:10px; color:#ddd; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:0; transition:opacity .15s; }
+.media-cell:hover .cell-name { opacity:1; }
+#browse-empty { padding:40px; color:var(--muted); font-size:12px; text-align:center; }
+
+/* ── Browse lightbox ───────────────────────────────── */
+#browse-lightbox { display:none; position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:200; align-items:center; justify-content:center; backdrop-filter:blur(8px); }
+#browse-lightbox.open { display:flex; }
+#lb-close { position:absolute; top:16px; right:20px; background:none; border:none; color:#fff; font-size:28px; cursor:pointer; opacity:.7; z-index:201; line-height:1; }
+#lb-close:hover { opacity:1; }
+#lb-img { max-width:95vw; max-height:92vh; object-fit:contain; display:none; border-radius:4px; }
+#lb-img.show { display:block; }
+#lb-video { max-width:95vw; max-height:92vh; display:none; border-radius:4px; outline:none; }
+#lb-video.show { display:block; }
+#lb-caption { position:absolute; bottom:16px; left:50%; transform:translateX(-50%); font-family:var(--mono); font-size:11px; color:rgba(255,255,255,.55); white-space:nowrap; max-width:80vw; overflow:hidden; text-overflow:ellipsis; }
+
+/* ── Index tab ─────────────────────────────────────── */
+#index-panel { display:none; flex:1; overflow-y:auto; padding:24px; flex-direction:column; gap:20px; }
+#index-panel.visible { display:flex; }
+.idx-section { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:18px 20px; }
+.idx-section h3 { font-size:12px; font-weight:600; letter-spacing:.06em; color:var(--muted2); text-transform:uppercase; margin:0 0 14px; }
+.idx-form-row { display:flex; gap:10px; align-items:center; margin-bottom:10px; }
+.idx-form-row label { font-size:11px; color:var(--muted2); width:56px; flex-shrink:0; }
+.idx-form-row input { flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:12px; font-family:var(--mono); padding:6px 10px; }
+.idx-form-row input:focus { outline:none; border-color:var(--accent); }
+#btn-build-index { background:var(--accent); border:none; border-radius:5px; color:#000; font-size:12px; font-weight:600; padding:8px 20px; cursor:pointer; }
+#btn-build-index:disabled { opacity:.45; cursor:not-allowed; }
+#idx-build-progress { margin-top:12px; display:none; }
+#idx-build-bar-wrap { background:var(--panel); border-radius:4px; height:6px; overflow:hidden; margin-bottom:6px; }
+#idx-build-bar { height:100%; width:0%; background:var(--accent); transition:width .3s; }
+#idx-build-msg { font-family:var(--mono); font-size:10px; color:var(--muted2); }
+.idx-list { display:flex; flex-direction:column; gap:6px; }
+.idx-row { display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:6px; cursor:pointer; transition:border-color .15s; }
+.idx-row:hover { border-color:var(--accent2); }
+.idx-row.selected { border-color:var(--accent); }
+.idx-row-name { font-size:12px; font-weight:500; color:var(--text); flex:1; }
+.idx-row-meta { font-family:var(--mono); font-size:10px; color:var(--muted); }
+.idx-row-del { background:none; border:none; color:var(--muted); font-size:14px; cursor:pointer; padding:2px 6px; border-radius:4px; }
+.idx-row-del:hover { background:rgba(255,80,80,.1); color:var(--red); }
+#idx-list-empty { color:var(--muted); font-size:12px; padding:12px 0; }
+
+/* ── Find Missing tab ──────────────────────────────── */
+#fm-panel { display:none; flex:1; overflow-y:auto; padding:24px; flex-direction:column; gap:20px; }
+#fm-panel.visible { display:flex; }
+.fm-section { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:18px 20px; }
+.fm-section h3 { font-size:12px; font-weight:600; letter-spacing:.06em; color:var(--muted2); text-transform:uppercase; margin:0 0 14px; }
+#fm-index-row { display:flex; gap:8px; align-items:center; }
+#fm-index-select { flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:12px; font-family:var(--mono); padding:6px 10px; }
+#fm-index-select:focus { outline:none; border-color:var(--accent); }
+#btn-fm-load-index { background:var(--panel); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:11px; padding:6px 14px; cursor:pointer; }
+#btn-fm-load-index:hover { border-color:var(--accent); color:var(--accent); }
+#fm-index-badge { font-family:var(--mono); font-size:10px; color:var(--accent); margin-top:6px; min-height:14px; }
+.fm-src-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+.fm-src-input { flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:12px; font-family:var(--mono); padding:6px 10px; }
+.fm-src-input:focus { outline:none; border-color:var(--accent); }
+.fm-src-del { background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; line-height:1; padding:2px 6px; border-radius:4px; }
+.fm-src-del:hover { background:rgba(255,80,80,.1); color:var(--red); }
+#btn-add-source { background:none; border:1px dashed var(--border2); border-radius:5px; color:var(--muted2); font-size:11px; padding:6px 14px; cursor:pointer; width:100%; margin-top:4px; }
+#btn-add-source:hover { border-color:var(--accent); color:var(--accent); }
+.fm-out-row { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+.fm-out-row label { font-size:11px; color:var(--muted2); white-space:nowrap; }
+#fm-missing-dir { flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:12px; font-family:var(--mono); padding:6px 10px; }
+#btn-fm-scan { background:var(--accent); border:none; border-radius:5px; color:#000; font-size:12px; font-weight:600; padding:9px 24px; cursor:pointer; }
+#btn-fm-scan:disabled { opacity:.45; cursor:not-allowed; }
+.fm-result-block { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; }
+.fm-result-header { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.fm-result-title { font-size:12px; font-weight:600; color:var(--text); flex:1; font-family:var(--mono); }
+.fm-stats { display:flex; gap:14px; font-family:var(--mono); font-size:11px; margin-bottom:12px; }
+.fm-stat-found { color:var(--green); }
+.fm-stat-missing { color:var(--red); }
+.fm-stat-unchecked { color:var(--muted); }
+.fm-result-actions { display:flex; gap:8px; margin-bottom:12px; }
+.fm-btn-sm { background:var(--panel); border:1px solid var(--border2); border-radius:5px; color:var(--text); font-size:11px; padding:5px 12px; cursor:pointer; }
+.fm-btn-sm:hover { border-color:var(--accent); color:var(--accent); }
+.fm-btn-sm.danger { color:var(--red); border-color:var(--red); }
+#fm-results { display:flex; flex-direction:column; gap:14px; }
+.fm-progress-wrap { background:var(--panel); border-radius:4px; height:5px; overflow:hidden; margin-bottom:8px; }
+.fm-progress-bar { height:100%; width:0%; background:var(--accent); transition:width .4s; }
+.fm-scan-msg { font-family:var(--mono); font-size:10px; color:var(--muted2); margin-bottom:8px; }
 </style>
 </head>
 <body>
@@ -1375,13 +1896,19 @@ body {
 <!-- ── Topbar ────────────────────────────────────── -->
 <div id="topbar">
   <div class="logo">Photo<em>Verify</em></div>
-  <div id="idx-chip" class="chip chip-muted">NOT INDEXED</div>
+  <div id="active-index-chip" class="chip chip-muted" style="display:none;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default;" title=""></div>
+  <div class="tab-switcher">
+    <button class="tab-btn"        id="tab-browse"  onclick="switchTab('browse')">Browse</button>
+    <button class="tab-btn"        id="tab-index"   onclick="switchTab('index')">Index</button>
+    <button class="tab-btn active" id="tab-fm"      onclick="switchTab('fm')">Find Missing</button>
+    <button class="tab-btn"        id="tab-verify"  onclick="switchTab('verify')" style="opacity:.5;font-size:10px;">Legacy</button>
+  </div>
   <div id="topbar-spacer"></div>
-  <button class="nav-btn" id="btn-scan-all" onclick="batchMatch()" disabled>Scan All</button>
-  <button class="nav-btn" id="btn-save-all-missing" onclick="saveAllMissing()" disabled style="color:var(--red);border-color:var(--red)">Save All Missing</button>
-  <button class="nav-btn" id="btn-save-progress" onclick="saveProgress()" disabled>Save Progress</button>
-  <button class="nav-btn" onclick="openLog()">Action Log (<span id="log-count">0</span>)</button>
-  <button class="nav-btn" onclick="openSetup()" style="border-color:var(--accent);color:var(--accent)">⚙ Configure</button>
+  <button class="nav-btn" id="btn-scan-all" onclick="batchMatch()" disabled style="display:none">Scan All</button>
+  <button class="nav-btn" id="btn-save-all-missing" onclick="saveAllMissing()" disabled style="display:none;color:var(--red);border-color:var(--red)">Save All Missing</button>
+  <button class="nav-btn" id="btn-save-progress" onclick="saveProgress()" disabled style="display:none">Save Progress</button>
+  <button class="nav-btn" id="btn-action-log" onclick="openLog()" style="display:none">Action Log (<span id="log-count">0</span>)</button>
+  <button class="nav-btn" id="btn-configure" onclick="openSetup()" style="display:none;border-color:var(--accent);color:var(--accent)">⚙ Configure</button>
 </div>
 
 <!-- ── Stats bar ─────────────────────────────────── -->
@@ -1449,6 +1976,90 @@ body {
       <button class="action-btn" id="btn-review"  onclick="doMove('review')"  disabled>⚑ Send to Review</button>
     </div>
   </div>
+
+  <!-- ── Browse Panel ──────────────────────────── -->
+  <div id="browse-panel">
+    <div id="browse-tree"></div>
+    <div id="browse-content">
+      <div id="browse-rootbar" style="display:flex;align-items:center;gap:8px;padding:0 14px;height:38px;background:var(--bg);border-bottom:1px solid var(--border);flex-shrink:0;">
+        <span style="font-size:10px;color:var(--muted2);white-space:nowrap;">Root folder:</span>
+        <input id="browse-root-input" type="text" placeholder="Leave blank to use loaded index folder" autocomplete="off"
+          style="flex:1;background:var(--surface);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;"
+          onkeydown="if(event.key==='Enter')setBrowseRoot()">
+        <button onclick="setBrowseRoot()" style="background:var(--panel);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-size:11px;padding:4px 10px;cursor:pointer;">Go</button>
+      </div>
+      <div id="browse-filterbar">
+        <button class="filter-btn active" data-mf="all"   onclick="setBrowseFilter('all')">All</button>
+        <button class="filter-btn"        data-mf="photo" onclick="setBrowseFilter('photo')">📷 Photos</button>
+        <button class="filter-btn"        data-mf="video" onclick="setBrowseFilter('video')">🎬 Videos</button>
+        <span id="browse-path-label">—</span>
+        <span id="browse-count"></span>
+        <select id="browse-sort" onchange="sortAndRenderGrid()">
+          <option value="date">Sort: Date ▼</option>
+          <option value="name">Sort: Name ▲</option>
+        </select>
+      </div>
+      <div id="browse-grid-wrap">
+        <div id="browse-grid"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Browse Lightbox ───────────────────────────── -->
+<div id="browse-lightbox" onclick="if(event.target===this)closeLightbox()">
+  <button id="lb-close" onclick="closeLightbox()">✕</button>
+  <img    id="lb-img" alt="preview">
+  <video  id="lb-video" controls playsinline></video>
+  <div    id="lb-caption"></div>
+</div>
+
+<!-- ── Index Panel ───────────────────────────────── -->
+<div id="index-panel">
+  <div class="idx-section">
+    <h3>Build New Index</h3>
+    <div class="idx-form-row">
+      <label>Name</label>
+      <input id="idx-name" type="text" placeholder="e.g. OnePlus-11R-Master" autocomplete="off">
+    </div>
+    <div class="idx-form-row">
+      <label>Folder</label>
+      <input id="idx-folder" type="text" placeholder="E:\\Photos\\Master\\DCIM" autocomplete="off">
+    </div>
+    <button id="btn-build-index" onclick="buildIndex()">Build Index</button>
+    <div id="idx-build-progress">
+      <div id="idx-build-bar-wrap"><div id="idx-build-bar"></div></div>
+      <div id="idx-build-msg"></div>
+    </div>
+  </div>
+  <div class="idx-section">
+    <h3>Saved Indexes</h3>
+    <div id="idx-list"><div id="idx-list-empty">No indexes yet.</div></div>
+  </div>
+</div>
+
+<!-- ── Find Missing Panel ────────────────────────── -->
+<div id="fm-panel">
+  <div class="fm-section">
+    <h3>Master Index</h3>
+    <div id="fm-index-row">
+      <select id="fm-index-select" onchange="fmLoadIndex()"><option value="">— select an index —</option></select>
+    </div>
+    <div id="fm-index-badge"></div>
+  </div>
+  <div class="fm-section">
+    <h3>Source Backups to Check</h3>
+    <div id="fm-sources"></div>
+    <button id="btn-add-source" onclick="fmAddSource()">+ Add Source Folder</button>
+  </div>
+  <div class="fm-section">
+    <div class="fm-out-row">
+      <label>Missing output:</label>
+      <input id="fm-missing-dir" type="text" placeholder="E:\\photo-verify\\missing" autocomplete="off">
+    </div>
+    <button id="btn-fm-scan" onclick="fmScanAll()" disabled>&#9654; Scan All Sources</button>
+  </div>
+  <div id="fm-results"></div>
 </div>
 
 <!-- ── Setup Modal ───────────────────────────────── -->
@@ -1550,12 +2161,28 @@ async function init() {
   fill('cfg-review',  s.cfg.review_dir);
   document.getElementById('cfg-move').checked = s.cfg.move_mode;
   updateIdxChip(s.idx);
+  updateActiveIndexChip(s.active_index_meta);
   refreshCacheList();
   if (s.src_count > 0) {
     await loadAllPhotos();
   }
   if (!s.pil) {
     warn('Pillow not installed. Run: pip3 install Pillow\nThumbnails and EXIF matching will not work.');
+  }
+  // Default to Find Missing tab on startup
+  switchTab('fm');
+}
+
+function updateActiveIndexChip(meta) {
+  const chip = document.getElementById('active-index-chip');
+  if (!chip) return;
+  if (meta && meta.name) {
+    chip.style.display = '';
+    chip.className = 'chip chip-ok';
+    chip.textContent = meta.name + ' · ' + (meta.total || 0).toLocaleString() + ' files';
+    chip.title = meta.folder || '';
+  } else {
+    chip.style.display = 'none';
   }
 }
 
@@ -2088,15 +2715,469 @@ function updateStats() {
 
 // ── Keyboard navigation ──────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
-  if (document.getElementById('overlay').classList.contains('open'))  return;
-  if (document.getElementById('log-overlay').classList.contains('open')) return;
+  if (e.key === 'Escape') {
+    if (document.getElementById('browse-lightbox').classList.contains('open')) { closeLightbox(); return; }
+    if (document.getElementById('log-overlay').classList.contains('open'))     { closeLog();      return; }
+  }
+  if (document.getElementById('overlay').classList.contains('open'))       return;
+  if (document.getElementById('log-overlay').classList.contains('open'))   return;
+  if (document.getElementById('browse-lightbox').classList.contains('open')) return;
+  if (_activeTab === 'browse') return;
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown')  navigate(1);
   if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')    navigate(-1);
   if (e.key === 'm') doMove('missing');
   if (e.key === 'r') doMove('review');
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// Tab switcher
+// ────────────────────────────────────────────────────────────────────────────
+let _activeTab = 'verify';
+
+function switchTab(tab) {
+  _activeTab = tab;
+  ['verify','browse','index','fm'].forEach(t => {
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+  });
+
+  const isVerify = tab === 'verify';
+  ['sidebar', 'viewer'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isVerify ? '' : 'none';
+  });
+  document.getElementById('browse-panel').classList.toggle('visible', tab === 'browse');
+  document.getElementById('index-panel').classList.toggle('visible', tab === 'index');
+  document.getElementById('fm-panel').classList.toggle('visible', tab === 'fm');
+
+  // Legacy (Verify) topbar buttons
+  ['btn-scan-all','btn-save-all-missing','btn-save-progress','btn-action-log','btn-configure'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isVerify ? '' : 'none';
+  });
+  document.getElementById('statsbar').style.display = isVerify ? '' : 'none';
+
+  if (tab === 'browse') {
+    if (!B.rootLoaded) loadBrowseRoot();
+  }
+  if (tab === 'index') idxRefreshList();
+  if (tab === 'fm')    fmRefreshIndexSelect();
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Browse state
+// ────────────────────────────────────────────────────────────────────────────
+const B = {
+  rootLoaded:  false,
+  currentPath: '',
+  allFiles:    [],
+  mediaFilter: 'all',
+  sortMode:    'date',
+  _sorted:     [],
+  _nodeId:     0,
+  _nodeMap:    {},
+};
+
+function _browseNodeId(path) {
+  if (!B._nodeMap[path]) B._nodeMap[path] = 'tn_' + (++B._nodeId);
+  return B._nodeMap[path];
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Folder tree
+// ────────────────────────────────────────────────────────────────────────────
+async function setBrowseRoot() {
+  const input = document.getElementById('browse-root-input');
+  const root  = input.value.trim();
+  if (root) {
+    const r = await post('/api/set_browse_root', {root});
+    if (!r.ok) { alert(r.msg); return; }
+  }
+  B.rootLoaded = false;
+  B._nodeId  = 0;
+  B._nodeMap = {};
+  document.getElementById('browse-tree').innerHTML = '';
+  document.getElementById('browse-grid').innerHTML = '';
+  B.allFiles = [];
+  B._sorted  = [];
+  await loadBrowseRoot();
+}
+
+async function loadBrowseRoot() {
+  const tree = document.getElementById('browse-tree');
+  B.rootLoaded = true;
+  const data = await get('/api/browse_tree');
+  if (!data.ok) {
+    tree.innerHTML = '<div style="padding:16px;color:var(--muted);font-size:11px;">No folder available. Enter a path above or load an index first.</div>';
+    return;
+  }
+  // Show the resolved root in the input
+  const inp = document.getElementById('browse-root-input');
+  if (inp && !inp.value) inp.placeholder = data.path;
+  tree.innerHTML = '';
+  _renderTreeNodes(data.dirs, tree, 0, data.path);
+  _loadFolderFiles(data.path, data.files);
+}
+
+function _renderTreeNodes(dirs, container, depth, parentPath) {
+  dirs.forEach(d => {
+    const nid = _browseNodeId(d.path);
+    const row = document.createElement('div');
+    row.className = 'tree-node';
+    row.style.paddingLeft = (10 + depth * 14) + 'px';
+    row.dataset.path = d.path;
+    row.dataset.depth = depth;
+    row.innerHTML = `<span class="tree-arrow" id="arr-${nid}">▶</span>📁 <span>${esc(d.name)}</span>`;
+    row.onclick = () => toggleTreeNode(d.path, nid, depth);
+
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+    children.id = 'ch-' + nid;
+
+    container.appendChild(row);
+    container.appendChild(children);
+  });
+}
+
+async function toggleTreeNode(path, nid, depth) {
+  // Highlight selected
+  document.querySelectorAll('.tree-node').forEach(n => n.classList.remove('selected'));
+  const row = document.querySelector(`.tree-node[data-path="${CSS.escape(path)}"]`);
+  if (row) row.classList.add('selected');
+
+  const arrow    = document.getElementById('arr-' + nid);
+  const children = document.getElementById('ch-'  + nid);
+  const isOpen   = arrow && arrow.classList.contains('open');
+
+  // Always reload folder files on click
+  const data = await get('/api/browse_tree?path=' + encodeURIComponent(path));
+  if (data.ok) _loadFolderFiles(path, data.files);
+
+  if (isOpen) {
+    if (arrow) arrow.classList.remove('open');
+    if (children) children.classList.remove('open');
+  } else {
+    if (arrow) arrow.classList.add('open');
+    if (children) {
+      children.classList.add('open');
+      if (!children.dataset.loaded) {
+        _renderTreeNodes(data.dirs || [], children, depth + 1, path);
+        children.dataset.loaded = '1';
+      }
+    }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Media grid
+// ────────────────────────────────────────────────────────────────────────────
+function _loadFolderFiles(path, files) {
+  B.currentPath = path;
+  B.allFiles    = files || [];
+  document.getElementById('browse-path-label').textContent = path;
+  sortAndRenderGrid();
+}
+
+function setBrowseFilter(f) {
+  B.mediaFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mf === f));
+  sortAndRenderGrid();
+}
+
+function sortAndRenderGrid() {
+  B.sortMode = document.getElementById('browse-sort').value;
+  let files = B.allFiles.slice();
+  if (B.mediaFilter === 'photo') files = files.filter(f => !f.is_video);
+  if (B.mediaFilter === 'video') files = files.filter(f =>  f.is_video);
+  if (B.sortMode === 'date') files.sort((a, b) => b.mtime - a.mtime);
+  else                       files.sort((a, b) => a.name.localeCompare(b.name));
+  B._sorted = files;
+
+  const grid = document.getElementById('browse-grid');
+  document.getElementById('browse-count').textContent = files.length + ' item' + (files.length !== 1 ? 's' : '');
+
+  if (!files.length) {
+    grid.innerHTML = '<div id="browse-empty">No media files in this folder.</div>';
+    return;
+  }
+  grid.innerHTML = files.map((f, i) => {
+    const thumb = '/thumb/dest?p=' + encodeURIComponent(f.path) + '&_=' + Math.floor(f.mtime);
+    const badge = f.is_video ? '<div class="video-badge">▶</div>' : '';
+    return `<div class="media-cell" onclick="openLightbox(${i})">
+      <img src="${thumb}" loading="lazy" onerror="this.style.opacity='.15'">
+      ${badge}
+      <div class="cell-name">${esc(f.name)}</div>
+    </div>`;
+  }).join('');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Lightbox
+// ────────────────────────────────────────────────────────────────────────────
+function openLightbox(idx) {
+  const f = B._sorted[idx];
+  if (!f) return;
+  const lb  = document.getElementById('browse-lightbox');
+  const img = document.getElementById('lb-img');
+  const vid = document.getElementById('lb-video');
+  img.classList.remove('show');
+  vid.classList.remove('show');
+  if (vid.src) { vid.pause(); vid.removeAttribute('src'); vid.load(); }
+
+  const url = '/api/media?path=' + encodeURIComponent(f.path);
+  document.getElementById('lb-caption').textContent = f.name;
+  if (f.is_video) {
+    vid.src = url;
+    vid.classList.add('show');
+  } else {
+    img.src = url;
+    img.classList.add('show');
+  }
+  lb.classList.add('open');
+}
+
+function closeLightbox() {
+  const vid = document.getElementById('lb-video');
+  if (vid.src) { vid.pause(); vid.removeAttribute('src'); vid.load(); }
+  document.getElementById('browse-lightbox').classList.remove('open');
+}
+
 init();
+
+// ────────────────────────────────────────────────────────────────────────────
+// Index tab
+// ────────────────────────────────────────────────────────────────────────────
+let _idxPollTimer = null;
+let _selectedIndexFile = null;
+
+async function idxRefreshList() {
+  const r = await get('/api/list_indexes');
+  const el = document.getElementById('idx-list');
+  if (!r.indexes || !r.indexes.length) {
+    el.innerHTML = '<div id="idx-list-empty">No indexes yet.</div>';
+    return;
+  }
+  el.innerHTML = r.indexes.map(ix => `
+    <div class="idx-row${_selectedIndexFile===ix.file?' selected':''}" onclick="idxSelectRow(this,'${esc(ix.file)}')">
+      <div class="idx-row-name">${esc(ix.name)}</div>
+      <div class="idx-row-meta">${ix.total.toLocaleString()} files &nbsp;·&nbsp; ${ix.built.slice(0,10)}</div>
+      <div class="idx-row-meta" title="${esc(ix.folder)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ix.folder)}</div>
+      <button class="idx-row-del" title="Delete index" onclick="event.stopPropagation();idxDelete('${esc(ix.file)}')">✕</button>
+    </div>`).join('');
+}
+
+function idxSelectRow(el, file) {
+  _selectedIndexFile = file;
+  document.querySelectorAll('.idx-row').forEach(r => r.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function idxDelete(file) {
+  if (!confirm('Delete this index file?\n' + file)) return;
+  try {
+    await fetch('/api/delete_index', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({file})});
+  } catch(e) {}
+  if (_selectedIndexFile === file) _selectedIndexFile = null;
+  idxRefreshList();
+}
+
+async function buildIndex() {
+  const folder = document.getElementById('idx-folder').value.trim();
+  const name   = document.getElementById('idx-name').value.trim();
+  if (!folder) { alert('Enter the folder path to index.'); return; }
+  const r = await post('/api/build_index', {folder, name});
+  if (!r.ok) { alert(r.msg); return; }
+  document.getElementById('btn-build-index').disabled = true;
+  document.getElementById('idx-build-progress').style.display = 'block';
+  _idxPollTimer = setInterval(idxPollProgress, 800);
+}
+
+async function idxPollProgress() {
+  const s = await get('/api/idx_status');
+  const bar = document.getElementById('idx-build-bar');
+  const msg = document.getElementById('idx-build-msg');
+  if (!s) return;
+  const pct = s.total > 0 ? Math.round(s.current / s.total * 100) : 0;
+  bar.style.width = pct + '%';
+  msg.textContent = s.msg || '';
+  if (s.phase === 'done' || s.phase === 'error') {
+    clearInterval(_idxPollTimer);
+    _idxPollTimer = null;
+    document.getElementById('btn-build-index').disabled = false;
+    idxRefreshList();
+  }
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Find Missing tab
+// ────────────────────────────────────────────────────────────────────────────
+let _fmLoadedIndex  = null;   // {file, name, total, folder}
+let _fmScanAbort    = false;
+let _fmSourceCount  = 0;
+
+async function fmRefreshIndexSelect() {
+  const sel = document.getElementById('fm-index-select');
+  const cur = sel.value;
+  const r   = await get('/api/list_indexes');
+  sel.innerHTML = '<option value="">— select an index —</option>';
+  (r.indexes || []).forEach(ix => {
+    const opt = document.createElement('option');
+    opt.value       = ix.file;
+    opt.textContent = ix.name + ' (' + (ix.total || 0).toLocaleString() + ' files' +
+                      (ix.built ? ', ' + ix.built.slice(0,10) : '') + ')';
+    sel.appendChild(opt);
+  });
+  if (cur) sel.value = cur;
+  // Re-trigger auto-load if a value is already selected
+  if (sel.value) await fmLoadIndex();
+  if (!_fmSourceCount) fmAddSource();
+}
+
+async function fmLoadIndex() {
+  const file = document.getElementById('fm-index-select').value;
+  if (!file) {
+    _fmLoadedIndex = null;
+    document.getElementById('fm-index-badge').textContent = '';
+    document.getElementById('btn-fm-scan').disabled = true;
+    return;
+  }
+  const r = await post('/api/load_index', {file});
+  if (!r.ok) {
+    document.getElementById('fm-index-badge').textContent = 'Error: ' + r.msg;
+    return;
+  }
+  _fmLoadedIndex = {file, name: r.name, total: r.total, folder: r.folder};
+  document.getElementById('fm-index-badge').textContent =
+    '✓ ' + r.name + ' — ' + (r.total || 0).toLocaleString() + ' files indexed';
+  document.getElementById('btn-fm-scan').disabled = false;
+  updateActiveIndexChip({name: r.name, total: r.total, folder: r.folder});
+}
+
+function fmAddSource() {
+  _fmSourceCount++;
+  const wrap = document.createElement('div');
+  wrap.className = 'fm-src-row';
+  wrap.dataset.sid = _fmSourceCount;
+  wrap.innerHTML = `<input class="fm-src-input" type="text" placeholder="E:\\\\Backups\\\\YourFolder" autocomplete="off">
+    <button class="fm-src-del" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+  document.getElementById('fm-sources').appendChild(wrap);
+}
+
+async function fmScanAll() {
+  if (!_fmLoadedIndex) { alert('Select and load a master index first.'); return; }
+  const sources = [...document.querySelectorAll('.fm-src-input')]
+    .map(i => i.value.trim()).filter(Boolean);
+  if (!sources.length) { alert('Add at least one source folder.'); return; }
+
+  const outDir = document.getElementById('fm-missing-dir').value.trim();
+  // Push output dir to backend config before scanning
+  if (outDir) await post('/api/configure', {cfg: {missing_dir: outDir}});
+
+  document.getElementById('btn-fm-scan').disabled = true;
+  document.getElementById('fm-results').innerHTML = '';
+  _fmScanAbort = false;
+
+  for (const src of sources) {
+    if (_fmScanAbort) break;
+    await fmScanSource(src, outDir);
+  }
+  document.getElementById('btn-fm-scan').disabled = false;
+}
+
+async function fmScanSource(source, outDir) {
+  const resultsEl = document.getElementById('fm-results');
+  const blockId   = 'fm-block-' + source.replace(/[^a-z0-9]/gi, '_');
+
+  resultsEl.insertAdjacentHTML('beforeend', `
+    <div class="fm-result-block" id="${blockId}">
+      <div class="fm-result-header">
+        <div class="fm-result-title">${esc(source)}</div>
+      </div>
+      <div class="fm-progress-wrap"><div class="fm-progress-bar" id="${blockId}-bar"></div></div>
+      <div class="fm-scan-msg" id="${blockId}-msg">Starting session…</div>
+      <div class="fm-stats" style="display:none" id="${blockId}-stats"></div>
+      <div class="fm-result-actions" style="display:none" id="${blockId}-actions"></div>
+    </div>`);
+
+  const setMsg = m => { const el = document.getElementById(blockId + '-msg'); if(el) el.textContent = m; };
+  const setBar = p => { const el = document.getElementById(blockId + '-bar'); if(el) el.style.width = p + '%'; };
+
+  // Create session (also loads index + scans source into _state['src_photos'])
+  const sr = await post('/api/new_session', {index_file: _fmLoadedIndex.file, source});
+  if (!sr.ok) { setMsg('Error: ' + sr.msg); return; }
+
+  const nSrc = sr.n_src;
+  setMsg(`Scanning ${nSrc.toLocaleString()} files…`);
+
+  // Chunked scan — CHUNK size balances UI responsiveness vs round-trips
+  const CHUNK = 200;
+  let offset  = 0;
+  let found = 0, missing = 0, review = 0;
+  const missingIndices = [];  // collect indices of missing files for bulk save
+
+  while (offset < nSrc && !_fmScanAbort) {
+    const r = await post('/api/batch_match', {start: offset, count: CHUNK});
+    if (!r || !r.results) break;
+
+    for (const res of r.results) {
+      if (res.status === 'found')        found++;
+      else if (res.status === 'missing') { missing++; missingIndices.push(res.i); }
+      else                               review++;
+    }
+
+    offset += r.results.length;
+    const pct = nSrc > 0 ? Math.round(offset / nSrc * 100) : 0;
+    setBar(pct);
+    setMsg(`${offset.toLocaleString()} / ${nSrc.toLocaleString()} checked…`);
+
+    const statsEl = document.getElementById(blockId + '-stats');
+    if (statsEl) {
+      statsEl.style.display = 'flex';
+      statsEl.innerHTML =
+        `<span class="fm-stat-found">Found: ${found.toLocaleString()}</span>` +
+        `<span class="fm-stat-missing">Missing: ${missing.toLocaleString()}</span>` +
+        `<span class="fm-stat-unchecked">Remaining: ${(nSrc - offset).toLocaleString()}</span>`;
+    }
+
+    if (r.results.length < CHUNK) break;
+  }
+
+  setBar(100);
+  setMsg('Scan complete.');
+  _save_session_state();
+
+  const actEl = document.getElementById(blockId + '-actions');
+  if (actEl && missing > 0) {
+    actEl.style.display = 'flex';
+    // Store indices on the button so they survive across multiple source scans
+    const btn = document.createElement('button');
+    btn.className = 'fm-btn-sm danger';
+    btn.textContent = 'Save All Missing (' + missing.toLocaleString() + ')';
+    btn._missingIndices = missingIndices;
+    btn._outDir = outDir;
+    btn.onclick = () => fmSaveAllMissing(btn._missingIndices, btn._outDir);
+    actEl.appendChild(btn);
+  }
+}
+
+async function _save_session_state() {
+  // Persist current session progress to disk
+  await post('/api/save_progress_bulk', {idx_map: {}, last_idx: 0});
+}
+
+async function fmSaveAllMissing(indices, outDir) {
+  if (!indices || !indices.length) { alert('No missing files to save.'); return; }
+  const r = await post('/api/bulk_action', {indices, type: 'missing'});
+  if (r && r.saved !== undefined) {
+    alert('Saved ' + r.saved + ' files to:\n' + (r.out_dir || outDir || 'output folder'));
+  } else {
+    alert(r && r.msg ? r.msg : 'Error saving files.');
+  }
+}
 </script>
 </body>
 </html>"""
