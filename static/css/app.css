@@ -726,3 +726,42 @@ body {
 #btn-v-deep    { background: var(--panel); border: 1px solid var(--purple); color: var(--purple); }
 #btn-v-missing { background: rgba(255,79,109,.15); border: 1px solid var(--red); color: var(--red); }
 #btn-v-review  { background: rgba(240,180,41,.12); border: 1px solid var(--yellow); color: var(--yellow); }
+
+/* Analyze tab */
+#btn-az-start {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 22px;
+  cursor: pointer;
+  transition: filter .15s;
+}
+#btn-az-start:hover    { filter: brightness(1.1); }
+#btn-az-start:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+
+#btn-az-open {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 22px;
+  cursor: pointer;
+  transition: filter .15s;
+}
+#btn-az-open:hover { filter: brightness(1.1); }
+
+#az-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width .3s;
+}
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); width: 60%; }
+  100% { transform: translateX(200%);  width: 60%; }
+}

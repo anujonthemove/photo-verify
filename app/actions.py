@@ -43,18 +43,23 @@ def _copy_to_output(src: str, dest_type: str) -> tuple[bool, str]:
         if out_real == g or out_real.startswith(g + os.sep):
             return False, 'Output folder must not be inside src or dest!'
 
-    os.makedirs(out_dir, exist_ok=True)
-
     name = Path(src).name
     dst  = os.path.join(out_dir, name)
     stem, suf = Path(src).stem, Path(src).suffix
 
+    # Skip if this exact source path was already copied this session
+    saved = _state.setdefault('_saved_paths', set())
+    if src in saved:
+        return False, '_skipped_'
+
+    os.makedirs(out_dir, exist_ok=True)
+
     if os.path.exists(dst):
-        # Same size → almost certainly the same file already copied; skip
-        if os.path.getsize(dst) == os.path.getsize(src):
-            return False, '_skipped_'
-        # Different file sharing the same filename → rename with timestamp
-        dst = os.path.join(out_dir, f"{stem}_{int(time.time() * 1000)}{suf}")
+        # Name collision with a different source file → disambiguate with parent folder name
+        parent = Path(src).parent.name
+        dst = os.path.join(out_dir, f"{stem}_{parent}{suf}")
+        if os.path.exists(dst):
+            dst = os.path.join(out_dir, f"{stem}_{parent}_{int(time.time() * 1000)}{suf}")
 
     try:
         if _state['cfg']['move_mode']:
@@ -70,6 +75,7 @@ def _copy_to_output(src: str, dest_type: str) -> tuple[bool, str]:
             'type': dest_type,
             'verb': verb,
         })
+        saved.add(src)
         return True, dst
     except Exception as e:
         return False, str(e)

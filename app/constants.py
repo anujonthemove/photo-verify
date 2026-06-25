@@ -7,8 +7,9 @@ INDEX_DIR   = os.path.join(BASE_DIR, "indexes")
 SESSION_DIR = os.path.join(BASE_DIR, "sessions")
 LOGS_DIR    = os.path.join(BASE_DIR, "logs")
 CONFIG_DIR  = os.path.join(BASE_DIR, "config")
-MISSING_DIR = os.path.join(BASE_DIR, "missing")
-REVIEW_DIR  = os.path.join(BASE_DIR, "review")
+MISSING_DIR  = os.path.join(BASE_DIR, "missing")
+REVIEW_DIR   = os.path.join(BASE_DIR, "review")
+REPORTS_DIR  = os.path.join(BASE_DIR, "reports")
 THUMB_SIZE = 320   # px
 THUMB_CACHE_MAX = 800  # entries kept in memory
 

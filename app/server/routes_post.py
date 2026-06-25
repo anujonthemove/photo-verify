@@ -350,5 +350,17 @@ def _dispatch_inner(handler, u, body):
             msg = str(ex)
         handler._json({'ok': True, 'msg': msg})
 
+    elif u.path == '/api/analyze/start':
+        folder = body.get('folder', '').strip()
+        if not folder or not os.path.isdir(folder):
+            handler._json({'ok': False, 'msg': f'Folder not found: {folder}'})
+            return
+        if _state['analyze']['phase'] == 'scanning':
+            handler._json({'ok': False, 'msg': 'Scan already in progress.'})
+            return
+        from app.analyzer import _analyze_worker
+        threading.Thread(target=_analyze_worker, args=(folder,), daemon=True).start()
+        handler._json({'ok': True})
+
     else:
         handler._404()

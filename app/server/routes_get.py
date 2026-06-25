@@ -277,6 +277,28 @@ def dispatch(handler, u, qs):
             with open(p, 'rb') as f:
                 shutil.copyfileobj(f, handler.wfile)
 
+    elif u.path == '/api/analyze/status':
+        az = _state['analyze']
+        handler._json({
+            'phase':   az['phase'],
+            'scanned': az['scanned'],
+            'msg':     az['msg'],
+            'summary': az.get('summary', {}),
+        })
+
+    elif u.path == '/analyze/report':
+        html_content = _state['analyze'].get('report_html', '')
+        if not html_content:
+            handler._404()
+            return
+        data = html_content.encode('utf-8')
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/html; charset=utf-8')
+        handler.send_header('Content-Length', str(len(data)))
+        handler.send_header('Cache-Control', 'no-store')
+        handler.end_headers()
+        handler.wfile.write(data)
+
     else:
         handler._404()
 

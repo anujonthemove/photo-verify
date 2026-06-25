@@ -167,6 +167,7 @@ def _new_session(index_file: str, source: str) -> str:
     _state['session_ts']     = ts_str
     _state['progress']       = {}
     _state['last_idx']       = 0
+    _state['_saved_paths']   = set()
     return ses_path
 
 def _save_session():

@@ -32,4 +32,12 @@ _state = {
     '_thumb_cache':  {},        # path → jpeg_bytes  (LRU-ish)
     '_thumb_order':  [],        # insertion order for eviction
     '_state_lock':   threading.Lock(),
+    'analyze': {
+        'phase':       'idle',  # idle | scanning | done | error
+        'folder':      '',
+        'scanned':     0,
+        'msg':         '',
+        'report_html': '',
+        'summary':     {},
+    },
 }

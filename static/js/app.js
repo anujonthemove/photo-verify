@@ -3,8 +3,8 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(name + '-panel').classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
-  if (name === 'index')  { idxRefreshList(); }
-  if (name === 'verify') { vOnTabActivate(); }
+  if (name === 'index')   { idxRefreshList(); }
+  if (name === 'verify')  { vOnTabActivate(); }
 }
 
 function updateIndexChip(meta) {

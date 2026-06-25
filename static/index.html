@@ -14,8 +14,9 @@
 <div id="topbar">
   <div class="logo">Photo<em>Verify</em></div>
   <div class="tab-switcher">
-    <button class="tab-btn active" id="tab-index"  onclick="switchTab('index')">Index</button>
-    <button class="tab-btn"        id="tab-verify" onclick="switchTab('verify')">Verify</button>
+    <button class="tab-btn active" id="tab-index"   onclick="switchTab('index')">Index</button>
+    <button class="tab-btn"        id="tab-verify"  onclick="switchTab('verify')">Verify</button>
+    <button class="tab-btn"        id="tab-analyze" onclick="switchTab('analyze')">Analyze</button>
   </div>
   <div id="active-index-chip" class="chip chip-muted" style="display:none" title=""></div>
 </div>
@@ -172,9 +173,38 @@
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════
+     ANALYZE PANEL
+═══════════════════════════════════════════════════════════ -->
+<div id="analyze-panel" class="tab-panel">
+  <div class="idx-section">
+    <h3>Folder Analyzer</h3>
+    <p style="color:var(--c-muted);font-size:.85rem;margin-bottom:16px">
+      Scan any folder and get a full report of file types, sizes, categories, and more.
+    </p>
+    <div class="idx-form-row">
+      <label>Folder</label>
+      <input id="az-folder" type="text" placeholder="D:\AndroidDump\MyPhone" autocomplete="off"
+             onkeydown="if(event.key==='Enter')azStart()">
+    </div>
+    <button id="btn-az-start" onclick="azStart()">Analyze</button>
+
+    <div id="az-progress" style="display:none;margin-top:16px">
+      <div id="idx-build-bar-wrap" style="margin-bottom:8px"><div id="az-bar"></div></div>
+      <div id="az-msg" style="font-size:.82rem;color:var(--c-muted)"></div>
+    </div>
+
+    <div id="az-result" style="display:none;margin-top:20px">
+      <div id="az-summary" style="font-size:.85rem;color:var(--c-muted);margin-bottom:12px"></div>
+      <button id="btn-az-open" onclick="azOpenReport()">Open Report ↗</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/api.js"></script>
 <script src="/static/js/app.js"></script>
 <script src="/static/js/index-tab.js"></script>
 <script src="/static/js/verify-tab.js"></script>
+<script src="/static/js/analyze-tab.js"></script>
 </body>
 </html>
