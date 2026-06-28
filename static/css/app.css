@@ -657,12 +657,28 @@ body {
   text-align: center;
 }
 .ph-empty .icon { font-size: 36px; opacity: .3; }
-.panel-dest-foot {
-  padding: 5px 14px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-  min-height: 26px;
+.panel-head-dest {
+  flex-direction: column;
+  align-items: stretch;
+  height: auto;
+  min-height: 38px;
+  padding: 0;
+}
+.panel-head-dest .panel-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  height: 38px;
+}
+.v-dest-fullpath {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 2px 14px 5px;
+  word-break: break-all;
+  user-select: all;
+  cursor: text;
+  opacity: .7;
 }
 
 /* Action bar */
@@ -727,6 +743,43 @@ body {
 #btn-v-missing { background: rgba(255,79,109,.15); border: 1px solid var(--red); color: var(--red); }
 #btn-v-review  { background: rgba(240,180,41,.12); border: 1px solid var(--yellow); color: var(--yellow); }
 
+/* Compare tab */
+#btn-cz-start, #btn-cz-add, #btn-cz-open, #btn-cz-save {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 22px;
+  cursor: pointer;
+  transition: filter .15s;
+}
+#btn-cz-add {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  color: var(--muted);
+}
+#btn-cz-start:hover, #btn-cz-add:hover, #btn-cz-open:hover, #btn-cz-save:hover { filter: brightness(1.1); }
+#btn-cz-start:disabled, #btn-cz-add:disabled, #btn-cz-save:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+.cz-remove-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 6px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.cz-remove-btn:hover { color: var(--red); }
+#cz-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width .3s;
+}
+
 /* Analyze tab */
 #btn-az-start {
   background: var(--accent);
@@ -765,3 +818,118 @@ body {
   0%   { transform: translateX(-100%); width: 60%; }
   100% { transform: translateX(200%);  width: 60%; }
 }
+
+/* ── Live Photo Browse tab ───────────────────────────────── */
+#br-setup {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border2);
+  background: var(--panel);
+}
+#br-main {
+  display: flex;
+  height: calc(100vh - 104px);
+  overflow: hidden;
+}
+
+/* Sidebar */
+#br-sidebar {
+  width: 220px;
+  min-width: 180px;
+  border-right: 1px solid var(--border2);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+#br-list {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+}
+#br-list-inner {
+  position: relative;
+}
+.br-row {
+  position: absolute;
+  left: 0; right: 0;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border2);
+  box-sizing: border-box;
+}
+.br-row:hover   { background: var(--hover); }
+.br-row.active  { background: rgba(79,124,255,.15); border-left: 3px solid var(--accent); }
+.br-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--border2);
+  flex-shrink: 0;
+}
+.br-row-info  { flex: 1; overflow: hidden; }
+.br-row-name  { font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.br-row-meta  { font-size: .7rem; color: var(--c-muted); margin-top: 2px; }
+
+/* Live dot in sidebar rows */
+.br-live-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #facc15;
+  flex-shrink: 0;
+}
+
+/* Viewer */
+#br-viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#br-viewer-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  overflow: hidden;
+}
+#br-img, #br-vid {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+#br-actionbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border2);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+/* Live Photo badge (◎ symbol top-left of viewer) */
+#br-live-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0,0,0,.55);
+  color: #facc15;
+  border-radius: 20px;
+  padding: 4px 10px 4px 6px;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  backdrop-filter: blur(4px);
+  z-index: 10;
+  pointer-events: none;
+}
+#br-live-badge svg { flex-shrink: 0; }

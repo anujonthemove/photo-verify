@@ -16,7 +16,9 @@
   <div class="tab-switcher">
     <button class="tab-btn active" id="tab-index"   onclick="switchTab('index')">Index</button>
     <button class="tab-btn"        id="tab-verify"  onclick="switchTab('verify')">Verify</button>
-    <button class="tab-btn"        id="tab-analyze" onclick="switchTab('analyze')">Analyze</button>
+    <button class="tab-btn"        id="tab-analyze"  onclick="switchTab('analyze')">Analyze</button>
+    <button class="tab-btn"        id="tab-compare"  onclick="switchTab('compare')">Compare</button>
+    <button class="tab-btn"        id="tab-browse"   onclick="switchTab('browse')">Live Photo Browse</button>
   </div>
   <div id="active-index-chip" class="chip chip-muted" style="display:none" title=""></div>
 </div>
@@ -143,17 +145,18 @@
         </div>
         <!-- Dest panel -->
         <div class="panel">
-          <div class="panel-head">
-            <span class="ph-title">Match in Index</span>
-            <span id="v-match-chip" class="chip chip-muted">—</span>
+          <div class="panel-head panel-head-dest">
+            <div class="panel-head-row">
+              <span class="ph-title">Match in Index</span>
+              <span id="v-match-chip" class="chip chip-muted">—</span>
+              <span id="v-dest-meta" class="ph-name">—</span>
+            </div>
+            <div id="v-dest-fullpath" class="v-dest-fullpath" style="display:none"></div>
           </div>
           <div class="panel-body">
             <img    id="v-dest-img" alt="match">
             <video  id="v-dest-vid" controls playsinline></video>
             <div    id="v-dest-ph" class="ph-empty"><div class="icon">🗄</div>No file selected</div>
-          </div>
-          <div class="panel-dest-foot">
-            <span id="v-dest-meta" class="ph-name">—</span>
           </div>
         </div>
       </div>
@@ -201,10 +204,111 @@
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════
+     COMPARE PANEL
+═══════════════════════════════════════════════════════════ -->
+<div id="compare-panel" class="tab-panel">
+  <div class="idx-section">
+    <h3>Compare Folders</h3>
+    <p style="color:var(--c-muted);font-size:.85rem;margin-bottom:18px">
+      Set a master folder and one or more backups to find what files the master is missing.
+      Matching is strict: same filename <em>and</em> same byte size.
+      Media, databases, and cache files are excluded — targets Documents, Audio, and Archives.
+    </p>
+
+    <div id="cz-folder-list">
+      <div class="idx-form-row" id="cz-row-master">
+        <label>Master Folder</label>
+        <input id="cz-master" type="text" placeholder="D:\Master_Backup" autocomplete="off">
+      </div>
+      <div class="idx-form-row cz-row" id="cz-row-1">
+        <label>Backup 1</label>
+        <input id="cz-f-1" type="text" placeholder="D:\Backup_Jan" autocomplete="off">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin-top:4px;margin-bottom:16px">
+      <button id="btn-cz-add" onclick="czAddFolder()">+ Add Backup</button>
+      <button id="btn-cz-start" onclick="czStart()">Compare</button>
+    </div>
+
+    <div id="cz-progress" style="display:none;margin-top:4px">
+      <div id="idx-build-bar-wrap" style="margin-bottom:8px"><div id="cz-bar"></div></div>
+      <div id="cz-msg" style="font-size:.82rem;color:var(--c-muted)"></div>
+    </div>
+
+    <div id="cz-result" style="display:none;margin-top:20px">
+      <div id="cz-summary" style="font-size:.85rem;color:var(--c-muted);margin-bottom:12px"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button id="btn-cz-open" onclick="czOpenReport()">Open Report ↗</button>
+        <button id="btn-cz-save" onclick="czSaveMissing()">Save Missing Files</button>
+      </div>
+      <div id="cz-save-msg" style="font-size:.82rem;color:var(--c-muted);margin-top:10px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     LIVE PHOTO BROWSE PANEL
+═══════════════════════════════════════════════════════════ -->
+<div id="browse-panel" class="tab-panel">
+
+  <!-- Setup bar -->
+  <div id="br-setup">
+    <div class="v-setup-row">
+      <span class="v-lbl">Folder</span>
+      <input id="br-folder" type="text" placeholder="D:\iPhone\DCIM" autocomplete="off"
+             onkeydown="if(event.key==='Enter')brLoad()">
+      <button class="v-btn-primary" id="btn-br-load" onclick="brLoad()">Load</button>
+      <span id="br-count-chip" class="chip chip-muted" style="margin-left:14px"></span>
+    </div>
+  </div>
+
+  <!-- Main: sidebar + viewer -->
+  <div id="br-main">
+
+    <!-- Sidebar -->
+    <div id="br-sidebar">
+      <div id="br-list" onscroll="_brRenderSidebar()">
+        <div id="br-list-inner"></div>
+      </div>
+    </div>
+
+    <!-- Viewer -->
+    <div id="br-viewer">
+      <div id="br-viewer-wrap">
+        <!-- Live Photo symbol badge -->
+        <div id="br-live-badge" style="display:none">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>
+            <circle cx="12" cy="12" r="7"/>
+            <circle cx="12" cy="12" r="11"/>
+          </svg>
+          <span>LIVE</span>
+        </div>
+        <img  id="br-img" alt="photo" style="display:none">
+        <video id="br-vid" playsinline style="display:none"></video>
+        <div  id="br-ph" class="ph-empty"><div class="icon">📷</div>Load a folder to browse</div>
+      </div>
+
+      <!-- Action bar -->
+      <div id="br-actionbar">
+        <button class="nav-btn" id="btn-br-prev" onclick="brNavigate(-1)" disabled>◀</button>
+        <span   id="br-nav-counter">— / —</span>
+        <button class="nav-btn" id="btn-br-next" onclick="brNavigate(1)"  disabled>▶</button>
+        <span   id="br-viewer-meta" style="margin-left:16px;font-size:.82rem;color:var(--c-muted)"></span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <script src="/static/js/api.js"></script>
 <script src="/static/js/app.js"></script>
 <script src="/static/js/index-tab.js"></script>
 <script src="/static/js/verify-tab.js"></script>
 <script src="/static/js/analyze-tab.js"></script>
+<script src="/static/js/compare-tab.js"></script>
+<script src="/static/js/browse-tab.js"></script>
 </body>
 </html>

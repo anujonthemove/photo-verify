@@ -281,6 +281,7 @@ function _vApplyMatch(gi, match) {
     _vShowDest(match.path, match.method);
     document.getElementById('v-dest-meta').textContent =
       basename(match.path) + '  ·  via ' + match.method + (match.n > 1 ? '  (' + match.n + ' copies)' : '');
+    _vSetDestFullPath(match.path);
   } else {
     chip.textContent = 'MISSING';
     chip.className   = 'chip chip-red';
@@ -289,6 +290,7 @@ function _vApplyMatch(gi, match) {
     deepBtn.style.display = (!isVideo(photo.path)) ? '' : 'none';
     _vSetDestPlaceholder('✗', 'Not found in index');
     document.getElementById('v-dest-meta').textContent = 'No match found';
+    _vSetDestFullPath('');
   }
 
   // update filter count label
@@ -317,6 +319,13 @@ function _vSetDestPlaceholder(icon, msg) {
   img.classList.remove('show'); vid.classList.remove('show');
   ph.style.display = '';
   ph.innerHTML = '<div class="icon">' + icon + '</div>' + esc(msg);
+}
+
+function _vSetDestFullPath(path) {
+  const el = document.getElementById('v-dest-fullpath');
+  el.textContent = path;
+  el.title = path;
+  el.style.display = path ? '' : 'none';
 }
 
 // ── Navigation ──────────────────────────────────────────────────

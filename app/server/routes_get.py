@@ -225,6 +225,7 @@ def dispatch(handler, u, qs):
             _get_active_index_folder(),
             MISSING_DIR,
             REVIEW_DIR,
+            _state['browse'].get('folder', ''),
         ]
         if not any(
             real_p == os.path.realpath(r) or
@@ -276,6 +277,72 @@ def dispatch(handler, u, qs):
             handler.end_headers()
             with open(p, 'rb') as f:
                 shutil.copyfileobj(f, handler.wfile)
+
+    elif u.path == '/api/browse/list':
+        page  = int(qs.get('p', ['0'])[0])
+        per   = 200
+        items = _state['browse']['items']
+        start = page * per
+        batch = items[start:start + per]
+        handler._json({
+            'items': [{'i': start + j, **it} for j, it in enumerate(batch)],
+            'total': len(items),
+            'page':  page,
+            'pages': max(1, -(-len(items) // per)),
+        })
+
+    elif u.path == '/api/browse/item':
+        i     = int(qs.get('i', ['0'])[0])
+        items = _state['browse']['items']
+        if 0 <= i < len(items):
+            it = items[i]
+            size = os.path.getsize(it['path']) if os.path.isfile(it['path']) else 0
+            handler._json({
+                'i':          i,
+                'total':      len(items),
+                'type':       it['type'],
+                'name':       it['name'],
+                'path':       it['path'],
+                'video_path': it['video_path'],
+                'size':       size,
+            })
+        else:
+            handler._404()
+
+    elif u.path == '/thumb/browse':
+        i     = int(qs.get('i', ['-1'])[0])
+        items = _state['browse']['items']
+        if 0 <= i < len(items):
+            data = make_thumbnail(items[i]['path'])
+            if data:
+                handler._image(data)
+            else:
+                handler._404()
+        else:
+            handler._404()
+
+    elif u.path == '/api/compare/status':
+        cz = _state['compare']
+        handler._json({
+            'phase':   cz['phase'],
+            'current': cz['current'],
+            'total':   cz['total'],
+            'msg':     cz['msg'],
+            'summary': cz.get('summary', {}),
+        })
+
+    elif u.path == '/compare/report':
+        html_content = _state['compare'].get('report_html', '')
+        if not html_content:
+            handler._404()
+            return
+        data = html_content.encode('utf-8')
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/html; charset=utf-8')
+        handler.send_header('Content-Length', str(len(data)))
+        handler.send_header('Cache-Control', 'no-store')
+        handler.end_headers()
+        handler.wfile.write(data)
 
     elif u.path == '/api/analyze/status':
         az = _state['analyze']

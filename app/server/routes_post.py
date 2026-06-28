@@ -12,7 +12,7 @@ from app.scanner import scan_all_media
 from app.matcher import find_match
 from app.actions import do_action, do_action_path  # noqa: F401
 from app.indexer import _build_index_worker, _index_worker
-from app.constants import INDEX_DIR
+from app.constants import INDEX_DIR, MISSING_DIR
 from app.logger import _log
 
 
@@ -349,6 +349,70 @@ def _dispatch_inner(handler, u, body):
         except Exception as ex:
             msg = str(ex)
         handler._json({'ok': True, 'msg': msg})
+
+    elif u.path == '/api/compare/start':
+        master  = body.get('master', '').strip()
+        backups = [f.strip() for f in body.get('backups', []) if f.strip()]
+        if not master:
+            handler._json({'ok': False, 'msg': 'Master folder is required.'})
+            return
+        if not os.path.isdir(master):
+            handler._json({'ok': False, 'msg': f'Master folder not found: {master}'})
+            return
+        if len(backups) < 1:
+            handler._json({'ok': False, 'msg': 'Provide at least one backup folder.'})
+            return
+        bad = [f for f in backups if not os.path.isdir(f)]
+        if bad:
+            handler._json({'ok': False, 'msg': f'Not a directory: {bad[0]}'})
+            return
+        if _state['compare']['phase'] == 'scanning':
+            handler._json({'ok': False, 'msg': 'Comparison already in progress.'})
+            return
+        from app.comparator import _compare_master_worker
+        threading.Thread(
+            target=_compare_master_worker, args=(master, backups), daemon=True
+        ).start()
+        handler._json({'ok': True})
+
+    elif u.path == '/api/compare/save_missing':
+        cz = _state['compare']
+        if cz['phase'] != 'done':
+            handler._json({'ok': False, 'msg': 'Run a comparison first.'})
+            return
+        missing = cz.get('missing_files', [])
+        if not missing:
+            handler._json({'ok': False, 'msg': 'No missing files to save.'})
+            return
+        import datetime as _dt
+        from app.comparator import save_missing_files
+        ts      = _dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+        out_dir = os.path.join(MISSING_DIR, ts)
+        result  = save_missing_files(missing, out_dir)
+        handler._json({'ok': True, **result})
+
+    elif u.path == '/api/browse/load':
+        folder = body.get('folder', '').strip()
+        if not folder or not os.path.isdir(folder):
+            handler._json({'ok': False, 'msg': f'Folder not found: {folder}'})
+            return
+        from app.live_scanner import scan_live_photos, scan_summary, items_to_dicts
+        br = _state['browse']
+        br['phase']  = 'scanning'
+        br['folder'] = folder
+        br['items']  = []
+        br['summary'] = {}
+        try:
+            items = scan_live_photos(folder)
+            br['items']   = items_to_dicts(items)
+            br['summary'] = scan_summary(items)
+            br['phase']   = 'done'
+            br['msg']     = ''
+            handler._json({'ok': True, **br['summary']})
+        except Exception as e:
+            br['phase'] = 'error'
+            br['msg']   = str(e)
+            handler._json({'ok': False, 'msg': str(e)})
 
     elif u.path == '/api/analyze/start':
         folder = body.get('folder', '').strip()

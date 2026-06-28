@@ -32,6 +32,13 @@ _state = {
     '_thumb_cache':  {},        # path → jpeg_bytes  (LRU-ish)
     '_thumb_order':  [],        # insertion order for eviction
     '_state_lock':   threading.Lock(),
+    'browse': {
+        'phase':   'idle',   # idle | done | error
+        'msg':     '',
+        'items':   [],       # list[dict] — type, path, name, video_path
+        'folder':  '',
+        'summary': {},       # {total, live, static}
+    },
     'analyze': {
         'phase':       'idle',  # idle | scanning | done | error
         'folder':      '',
@@ -39,5 +46,14 @@ _state = {
         'msg':         '',
         'report_html': '',
         'summary':     {},
+    },
+    'compare': {
+        'phase':         'idle',  # idle | scanning | done | error
+        'current':       0,
+        'total':         0,
+        'msg':           '',
+        'report_html':   '',
+        'summary':       {},
+        'missing_files': [],      # list[dict] for save action
     },
 }
