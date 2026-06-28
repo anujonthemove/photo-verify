@@ -33,8 +33,14 @@ from app.constants import PORT
 
 
 class _QuietHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
     def handle_error(self, request, client_address):
-        import traceback
+        import sys, traceback
+        if sys.exc_info()[0] in (
+            ConnectionAbortedError, ConnectionResetError, BrokenPipeError
+        ):
+            return  # browser cancelled the request — not an app error
         from app.logger import _log
         _log(f"Request from {client_address}:\n{traceback.format_exc().rstrip()}")
 
@@ -67,12 +73,16 @@ def main():
 
     threading.Thread(target=_open, daemon=True).start()
 
+    from app.state import _state
     server = _QuietHTTPServer(("127.0.0.1", PORT), PhotoVerifyHandler)
+    _state['_server'] = server
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        import logging
+        logging.shutdown()
         server.server_close()
         print("\n  Stopped. Goodbye.")
         sys.exit(0)

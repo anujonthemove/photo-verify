@@ -933,3 +933,19 @@ body {
   pointer-events: none;
 }
 #br-live-badge svg { flex-shrink: 0; }
+
+/* ── Shutdown button ─────────────────────────────────────── */
+#btn-shutdown {
+  background: none;
+  border: 1px solid #ef4444;
+  color: #ef4444;
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 1rem;
+  cursor: pointer;
+  margin-left: auto;
+  line-height: 1;
+  transition: background .15s, color .15s;
+}
+#btn-shutdown:hover  { background: #ef4444; color: #fff; }
+#btn-shutdown:disabled { opacity: .4; cursor: not-allowed; }

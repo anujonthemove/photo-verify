@@ -426,5 +426,13 @@ def _dispatch_inner(handler, u, body):
         threading.Thread(target=_analyze_worker, args=(folder,), daemon=True).start()
         handler._json({'ok': True})
 
+    elif u.path == '/api/shutdown':
+        srv = _state.get('_server')
+        if not srv:
+            handler._json({'ok': False, 'msg': 'No server reference.'})
+            return
+        handler._json({'ok': True, 'msg': 'Shutting down…'})
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+
     else:
         handler._404()
