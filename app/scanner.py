@@ -56,6 +56,26 @@ def get_exif_datetime(path: str):
         pass
     return None
 
+def dhash(img_path: str, hash_size: int = 8) -> int | None:
+    """Compute difference hash of an image using Pillow. Returns 64-bit int or None on error."""
+    if not PIL_OK:
+        return None
+    target = (hash_size + 1, hash_size)
+    try:
+        with Image.open(img_path) as img:
+            # draft() tells the JPEG decoder to decode at the minimum needed resolution
+            # instead of allocating the full pixel buffer (e.g. 144 MB for a 48 MP photo).
+            # No-op for non-JPEG formats; safe to call unconditionally.
+            img.draft('L', target)
+            img = img.convert('L').resize(target, Image.LANCZOS)
+            pixels = list(img.getdata())
+            bits = (pixels[r * (hash_size + 1) + c] > pixels[r * (hash_size + 1) + c + 1]
+                    for r in range(hash_size) for c in range(hash_size))
+            return sum(b << i for i, b in enumerate(bits))
+    except Exception:
+        return None
+
+
 def file_md5(path: str):
     """Compute MD5 hex digest of a file."""
     h = hashlib.md5()

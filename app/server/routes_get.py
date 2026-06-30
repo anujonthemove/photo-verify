@@ -7,7 +7,7 @@ from urllib.parse import unquote
 from app.state import _state
 from app.storage import (
     list_cache_files, list_index_files, list_session_files,
-    _get_active_index_folder,
+    _get_active_index_folder, _load_settings,
 )
 from app.scanner import make_thumbnail, scan_all_media, get_exif_datetime
 from app.matcher import find_match, deep_find
@@ -133,15 +133,37 @@ def dispatch(handler, u, qs):
         try:
             with open(idx_file, encoding='utf-8') as f:
                 d = json.load(f)
+            if d.get('version') == 1:
+                files = d.get('files', [])
+                from app.constants import VIDEO_EXT
+                from pathlib import Path as _P
+                fnames = set()
+                n_exif = n_video = n_phash = 0
+                for e in files:
+                    fnames.add(_P(e['p']).name.lower())
+                    if _P(e['p']).suffix.lower() in VIDEO_EXT:
+                        n_video += 1
+                    else:
+                        if e.get('e'):
+                            n_exif += 1
+                        if e.get('h'):
+                            n_phash += 1
+                n_fname = len(fnames)
+            else:
+                n_fname = len(d.get('fname', {}))
+                n_exif = len(d.get('exif', {}))
+                n_video = len(d.get('video', {}))
+                n_phash = len(d.get('phash', {}))
             handler._json({
                 'ok':      True,
                 'name':    d.get('name', ''),
                 'folder':  d.get('folder', d.get('dest', '')),
                 'built':   d.get('built', ''),
                 'total':   d.get('total', 0),
-                'n_fname': len(d.get('fname', {})),
-                'n_exif':  len(d.get('exif', {})),
-                'n_video': len(d.get('video', {})),
+                'n_fname': n_fname,
+                'n_exif':  n_exif,
+                'n_video': n_video,
+                'n_phash': n_phash,
                 'file':    idx_file,
                 'size_mb': round(os.path.getsize(idx_file) / 1048576, 1),
             })
@@ -221,8 +243,9 @@ def dispatch(handler, u, qs):
         real_p = os.path.realpath(p)
         allowed_roots = [
             _state['cfg'].get('src', ''),
+            _state['cfg'].get('dest', ''),      # rebased dest (set by _load_index)
             _state.get('browse_root', ''),
-            _get_active_index_folder(),
+            _get_active_index_folder(),          # kept for legacy cache flow
             MISSING_DIR,
             REVIEW_DIR,
             _state['browse'].get('folder', ''),
@@ -343,6 +366,9 @@ def dispatch(handler, u, qs):
         handler.send_header('Cache-Control', 'no-store')
         handler.end_headers()
         handler.wfile.write(data)
+
+    elif u.path == '/api/settings':
+        handler._json(_load_settings())
 
     elif u.path == '/api/analyze/status':
         az = _state['analyze']

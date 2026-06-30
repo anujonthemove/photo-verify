@@ -7,6 +7,7 @@ from app.state import _state
 from app.storage import (
     _persist_config, _load_index, _new_session, _load_session,
     _load_config_for_cache, _save_session, _save_progress, list_cache_files,
+    _load_settings, _save_settings,
 )
 from app.scanner import scan_all_media
 from app.matcher import find_match
@@ -61,7 +62,7 @@ def _dispatch_inner(handler, u, body):
             handler._json({'ok': False, 'msg': 'Set destination folder first.'})
             return
         # Reset
-        _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}, 'video': {}}
+        _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}, 'video': {}, 'phash_list': []}
         _state['idx_status'] = {
             'phase': 'starting', 'current': 0, 'total': 0, 'msg': 'Starting…'
         }
@@ -79,7 +80,7 @@ def _dispatch_inner(handler, u, body):
         if _state['idx_status']['phase'] in ('scanning', 'building'):
             handler._json({'ok': False, 'msg': 'Already indexing — please wait.'})
             return
-        _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}, 'video': {}}
+        _state['dest_idx'] = {'fname': {}, 'exif': {}, 'hash': {}, 'video': {}, 'phash_list': []}
         _state['idx_status'] = {
             'phase': 'starting', 'current': 0, 'total': 0, 'msg': 'Starting…'
         }
@@ -153,7 +154,7 @@ def _dispatch_inner(handler, u, body):
     elif u.path == '/api/delete_index':
         idx_file = body.get('file', '').strip()
         # Security: only allow deleting files inside INDEX_DIR
-        if not idx_file or not os.path.abspath(idx_file).startswith(os.path.abspath(INDEX_DIR)):
+        if not idx_file or not os.path.abspath(idx_file).startswith(os.path.abspath(INDEX_DIR) + os.sep):
             handler._json({'ok': False, 'msg': 'Invalid path.'})
             return
         try:
@@ -180,9 +181,10 @@ def _dispatch_inner(handler, u, body):
         try:
             with open(file) as f:
                 cache = json.load(f)
-            _state['dest_idx']['fname'] = cache['fname']
-            _state['dest_idx']['exif']  = cache['exif']
-            _state['dest_idx']['hash']  = {}
+            _state['dest_idx']['fname']      = cache['fname']
+            _state['dest_idx']['exif']       = cache['exif']
+            _state['dest_idx']['hash']       = {}
+            _state['dest_idx']['phash_list'] = []  # legacy caches have no pHash data
             _state['progress']    = cache.get('progress', {})
             _state['last_idx']    = cache.get('last_idx', 0)
             _state['active_cache'] = file
@@ -253,27 +255,36 @@ def _dispatch_inner(handler, u, body):
                     'out_folder': out_folder})
 
     elif u.path == '/api/batch_match':
-        force   = body.get('force', False)
-        start   = int(body.get('start', 0))
-        count   = body.get('count', None)
-        photos  = _state['src_photos']
-        prog    = _state['progress']
-        results = []
-        found   = missing = skipped = 0
-        subset  = photos[start:start + count] if count is not None else photos[start:]
+        force       = body.get('force', False)
+        start       = int(body.get('start', 0))
+        count       = body.get('count', None)
+        photos      = _state['src_photos']
+        prog        = _state['progress']
+        match_paths = _state.setdefault('match_paths', {})
+        results     = []
+        found       = missing = skipped = 0
+        subset      = photos[start:start + count] if count is not None else photos[start:]
         for j, path in enumerate(subset):
             i = start + j
             if not force and path in prog:
                 skipped += 1
-                results.append({'i': i, 'path': path, 'status': prog[path], 'method': None})
+                mp = match_paths.get(path)
+                results.append({
+                    'i': i, 'path': path, 'status': prog[path],
+                    'method':     mp['method'] if mp else None,
+                    'match_path': mp['path']   if mp else None,
+                    'match_n':    mp['n']      if mp else 0,
+                })
                 continue
             m = find_match(path)
             if m:
                 status = 'found'
                 found += 1
+                match_paths[path] = {'method': m['method'], 'path': m['path'], 'n': m['n']}
             else:
                 status = 'missing'
                 missing += 1
+                match_paths.pop(path, None)
             prog[path] = status
             results.append({'i': i, 'path': path, 'status': status,
                             'method':     m['method'] if m else None,
@@ -425,6 +436,20 @@ def _dispatch_inner(handler, u, body):
         from app.analyzer import _analyze_worker
         threading.Thread(target=_analyze_worker, args=(folder,), daemon=True).start()
         handler._json({'ok': True})
+
+    elif u.path == '/api/settings/path_mappings':
+        mappings = body.get('mappings', [])
+        if not isinstance(mappings, list):
+            handler._json({'ok': False, 'msg': 'mappings must be a list'}); return
+        cleaned = []
+        for m in mappings:
+            f, t = str(m.get('from', '')).strip(), str(m.get('to', '')).strip()
+            if f:
+                cleaned.append({'from': f, 'to': t})
+        settings = _load_settings()
+        settings['path_mappings'] = cleaned
+        _save_settings(settings)
+        handler._json({'ok': True, 'count': len(cleaned)})
 
     elif u.path == '/api/shutdown':
         srv = _state.get('_server')

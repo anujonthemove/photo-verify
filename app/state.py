@@ -10,10 +10,11 @@ _state = {
     },
     'src_photos': [],           # sorted list of absolute paths
     'dest_idx': {
-        'fname': {},            # lowercase_basename → [path, ...]
-        'exif':  {},            # "YYYY:MM:DD HH:MM:SS|size" → [path, ...]
-        'hash':  {},            # md5hex → path  (built lazily)
-        'video': {},            # "filename|size" → [path, ...]
+        'fname':      {},       # lowercase_basename → [path, ...]
+        'exif':       {},       # "YYYY:MM:DD HH:MM:SS|size" → [path, ...]
+        'hash':       {},       # md5hex → path  (built lazily)
+        'video':      {},       # "filename|size" → [path, ...]
+        'phash_list': [],       # [(dhash_int, path), ...] built at index load time
     },
     'idx_status': {
         'phase':   'idle',      # idle | scanning | building | done | error
@@ -23,6 +24,7 @@ _state = {
     },
     'action_log': [],
     'progress':    {},          # src_path → 'found'|'missing'|'review'
+    'match_paths': {},          # src_path → {method, path, n}  (parallel to progress)
     'active_cache':   '',        # path to the currently-active legacy cache file
     'active_index':   '',        # path to the currently-loaded master index file
     'active_session': '',        # path to the current session file

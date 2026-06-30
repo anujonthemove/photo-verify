@@ -31,12 +31,13 @@ async function brLoad() {
     return;
   }
 
-  const { total, live, static: stat } = res;
+  const { total, live, static: stat, video: vid } = res;
   _brTotal = total;
   document.getElementById('br-count-chip').textContent =
-    `${total.toLocaleString()} photo${total !== 1 ? 's' : ''}` +
+    `${total.toLocaleString()} item${total !== 1 ? 's' : ''}` +
     (live  ? `  ·  ${live.toLocaleString()} live`   : '') +
-    (stat  ? `  ·  ${stat.toLocaleString()} static` : '');
+    (stat  ? `  ·  ${stat.toLocaleString()} static` : '') +
+    (vid   ? `  ·  ${vid.toLocaleString()} video`   : '');
 
   await _brFetchAllItems();
   _brRenderSidebar();
@@ -87,12 +88,15 @@ function _brRenderSidebar() {
     const liveHtml = it.type === 'live'
       ? '<span class="br-live-dot" title="Live Photo"></span>'
       : '';
+    const metaLabel = it.type === 'live'   ? 'Live Photo'
+                    : it.type === 'video'  ? 'Video'
+                    : 'Photo';
 
     row.innerHTML =
       `<img class="br-thumb" src="/thumb/browse?i=${i}" loading="lazy" alt="">` +
       `<div class="br-row-info">` +
       `<div class="br-row-name">${_esc(it.name)}</div>` +
-      `<div class="br-row-meta">${it.type === 'live' ? 'Live Photo' : 'Photo'}</div>` +
+      `<div class="br-row-meta">${metaLabel}</div>` +
       `</div>${liveHtml}`;
 
     inner.appendChild(row);
@@ -153,23 +157,29 @@ async function _brShowItem(i) {
   meta.textContent = it.name;
   badge.style.display = it.type === 'live' ? '' : 'none';
 
-  img.src = `/api/media?path=${encodeURIComponent(it.path)}`;
-
-  if (it.type === 'live') {
-    // Small delay so the still loads first, then play the video
-    _brLiveTimer = setTimeout(() => _brPlayLive(it.video_path), 600);
+  if (it.type === 'video') {
+    // Standalone video — no still image, play with audio and loop
+    img.style.display = 'none';
+    _brPlayLive(it.video_path, { muted: false, loop: true });
+  } else {
+    img.src = `/api/media?path=${encodeURIComponent(it.path)}`;
+    if (it.type === 'live') {
+      // Small delay so the still loads first, then play muted once
+      _brLiveTimer = setTimeout(() => _brPlayLive(it.video_path, { muted: true, loop: false }), 600);
+    }
   }
 }
 
-function _brPlayLive(videoPath) {
+function _brPlayLive(videoPath, { muted = true, loop = false } = {}) {
   const img = document.getElementById('br-img');
   const vid = document.getElementById('br-vid');
 
   vid.src   = `/api/media?path=${encodeURIComponent(videoPath)}`;
-  vid.muted = true;
-  vid.loop  = false;
+  vid.muted = muted;
+  vid.loop  = loop;
 
-  vid.onended = () => {
+  // Live photo: restore still after playback. Standalone video: loops, no restore needed.
+  vid.onended = loop ? null : () => {
     vid.style.display = 'none';
     img.style.display = '';
     vid.src = '';
@@ -178,7 +188,6 @@ function _brPlayLive(videoPath) {
   img.style.display = 'none';
   vid.style.display = '';
   vid.play().catch(() => {
-    // Playback blocked (e.g. HEIC not supported) — fall back to still
     vid.style.display = 'none';
     img.style.display = '';
   });
@@ -187,9 +196,13 @@ function _brPlayLive(videoPath) {
 function brReplayLive() {
   if (_brCur < 0 || !_brItems[_brCur]) return;
   const it = _brItems[_brCur];
-  if (it.type !== 'live') return;
+  if (it.type !== 'live' && it.type !== 'video') return;
   _brStopLive();
-  _brPlayLive(it.video_path);
+  if (it.type === 'video') {
+    _brPlayLive(it.video_path, { muted: false, loop: true });
+  } else {
+    _brPlayLive(it.video_path, { muted: true, loop: false });
+  }
 }
 
 function _brStopLive() {

@@ -2,6 +2,7 @@ import os
 import json
 import time
 from datetime import datetime
+from pathlib import Path
 try:
     import yaml
     YAML_OK = True
@@ -11,6 +12,53 @@ except ImportError:
 from app.constants import CACHE_DIR, INDEX_DIR, SESSION_DIR, CONFIG_DIR
 from app.state import _state
 from app.logger import _log
+
+# ── Global settings (path mappings, not session-tied) ─────────────────────────
+
+_SETTINGS_FILE = os.path.join(CONFIG_DIR, 'photoverify_settings.yaml')
+
+
+def _load_settings() -> dict:
+    if not YAML_OK or not os.path.isfile(_SETTINGS_FILE):
+        return {'path_mappings': []}
+    try:
+        with open(_SETTINGS_FILE, encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+        data.setdefault('path_mappings', [])
+        return data
+    except Exception:
+        return {'path_mappings': []}
+
+
+def _save_settings(data: dict):
+    if not YAML_OK:
+        return
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+
+
+def _remap(path: str, mappings: list) -> str:
+    """Apply the first matching prefix substitution from mappings. Separator-agnostic."""
+    if not path or not mappings:
+        return path
+    norm = path.replace('\\', '/')
+    for m in mappings:
+        from_n = m.get('from', '').replace('\\', '/').rstrip('/')
+        to_n   = m.get('to',   '').replace('\\', '/').rstrip('/')
+        if not from_n:
+            continue
+        if norm.lower().startswith(from_n.lower() + '/') or norm.lower() == from_n.lower():
+            rebased = to_n + norm[len(from_n):]
+            return str(Path(rebased))
+    return path
+
+
+def _rebase_paths(paths_dict: dict, mappings: list) -> dict:
+    """Rewrite path lists in {key: [path, ...]} index dict using mappings. In-memory only."""
+    if not mappings:
+        return paths_dict
+    return {k: [_remap(p, mappings) for p in v] for k, v in paths_dict.items()}
 
 
 def list_cache_files() -> list:
@@ -62,20 +110,75 @@ def list_index_files() -> list:
     return entries
 
 def _load_index(index_file: str):
-    """Load a master index file into _state['dest_idx']."""
+    """Load a master index file into _state['dest_idx'], applying path mappings."""
     with open(index_file, encoding='utf-8') as f:
         data = json.load(f)
-    # Support legacy cache format (no 'name' field)
-    _state['dest_idx']['fname'] = data.get('fname', {})
-    _state['dest_idx']['exif']  = data.get('exif',  {})
-    _state['dest_idx']['video'] = data.get('video', {})
-    _state['dest_idx']['hash']  = {}
+    mappings = _load_settings().get('path_mappings', [])
+    folder = _remap(data.get('folder', '') or data.get('dest', ''), mappings)
+
+    if data.get('version') == 1:
+        _load_index_v1(data, folder, mappings)
+    else:
+        _load_index_legacy(data, mappings)
+
+    _state['dest_idx']['hash'] = {}
     _state['active_index'] = index_file
-    # Set cfg.dest so deep_find can scan the master folder if needed
-    folder = data.get('folder', '') or data.get('dest', '')
     if folder:
         _state['cfg']['dest'] = folder
     return data
+
+
+def _load_index_v1(data: dict, folder: str, mappings: list):
+    """Load v1 format: normalized files array with relative paths."""
+    from app.constants import VIDEO_EXT
+    fname_idx = {}
+    exif_idx = {}
+    video_idx = {}
+    phash_list = []
+
+    for entry in data.get('files', []):
+        rel = entry['p'].replace('/', os.sep)
+        abs_path = _remap(os.path.join(folder, rel), mappings)
+        lname = os.path.basename(abs_path).lower()
+        ext = Path(abs_path).suffix.lower()
+
+        fname_idx.setdefault(lname, []).append(abs_path)
+
+        if ext in VIDEO_EXT:
+            sz = entry.get('s', 0)
+            video_idx.setdefault(f"{lname}|{sz}", []).append(abs_path)
+        else:
+            e = entry.get('e')
+            if e:
+                sz = entry.get('s', 0)
+                exif_idx.setdefault(f"{e}|{sz}", []).append(abs_path)
+            h = entry.get('h')
+            if h:
+                try:
+                    phash_list.append((int(h, 16), abs_path))
+                except ValueError:
+                    pass
+
+    _state['dest_idx']['fname'] = fname_idx
+    _state['dest_idx']['exif'] = exif_idx
+    _state['dest_idx']['video'] = video_idx
+    _state['dest_idx']['phash_list'] = phash_list
+
+
+def _load_index_legacy(data: dict, mappings: list):
+    """Load old format: separate fname/exif/video/phash dicts with absolute paths."""
+    _state['dest_idx']['fname'] = _rebase_paths(data.get('fname', {}), mappings)
+    _state['dest_idx']['exif'] = _rebase_paths(data.get('exif', {}), mappings)
+    _state['dest_idx']['video'] = _rebase_paths(data.get('video', {}), mappings)
+    phash_list = []
+    for hex_h, paths in data.get('phash', {}).items():
+        try:
+            h_int = int(hex_h, 16)
+            for p in paths:
+                phash_list.append((h_int, _remap(p, mappings)))
+        except ValueError:
+            pass
+    _state['dest_idx']['phash_list'] = phash_list
 
 def _get_active_index_folder() -> str:
     """Return the master folder path from the currently loaded index, or ''."""
@@ -153,13 +256,14 @@ def _new_session(index_file: str, source: str) -> str:
     ts_str   = datetime.now().strftime("%Y%m%d_%H%M%S")
     ses_path = os.path.join(SESSION_DIR, f"{ts_str}_session.json")
     data = {
-        'index_file': index_file,
-        'source':     source,
-        'ts':         time.time(),
-        'started':    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        'progress':   {},
-        'last_idx':   0,
-        'stats':      {'found': 0, 'missing': 0, 'review': 0},
+        'index_file':  index_file,
+        'source':      source,
+        'ts':          time.time(),
+        'started':     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'progress':    {},
+        'match_paths': {},
+        'last_idx':    0,
+        'stats':       {'found': 0, 'missing': 0, 'review': 0},
     }
     with open(ses_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, separators=(',', ':'), ensure_ascii=False)
@@ -178,9 +282,10 @@ def _save_session():
     try:
         with open(ses, encoding='utf-8') as f:
             data = json.load(f)
-        data['progress'] = _state['progress']
-        data['last_idx'] = _state['last_idx']
-        data['stats']    = {
+        data['progress']    = _state['progress']
+        data['match_paths'] = _state.get('match_paths', {})
+        data['last_idx']    = _state['last_idx']
+        data['stats']       = {
             'found':   sum(1 for s in _state['progress'].values() if s == 'found'),
             'missing': sum(1 for s in _state['progress'].values() if s == 'missing'),
             'review':  sum(1 for s in _state['progress'].values() if s == 'review'),
@@ -203,6 +308,7 @@ def _load_session(ses_path: str) -> dict:
         _state['cfg']['src']  = source
         _state['src_photos']  = scan_all_media(source) if os.path.isdir(source) else []
     _state['progress']       = data.get('progress', {})
+    _state['match_paths']    = data.get('match_paths', {})
     _state['last_idx']       = data.get('last_idx', 0)
     _state['active_session'] = ses_path
     _state['session_ts']     = '_'.join(os.path.basename(ses_path).split('_')[:2])

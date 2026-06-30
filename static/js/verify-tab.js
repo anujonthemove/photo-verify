@@ -265,6 +265,15 @@ function _vShowSrc(gi, path) {
   }
 }
 
+function _matchConfidence(method) {
+  if (method === 'hash')     return { label: 'Exact',         cls: 'conf-exact'  };
+  if (method === 'exif')     return { label: 'High',          cls: 'conf-high'   };
+  if (method === 'phash')    return { label: 'High · Visual', cls: 'conf-high'   };
+  if (method === 'filename') return { label: 'Medium',        cls: 'conf-medium' };
+  if (method === 'video')    return { label: 'Medium',        cls: 'conf-medium' };
+  return { label: '', cls: '' };
+}
+
 function _vApplyMatch(gi, match) {
   const chip    = document.getElementById('v-match-chip');
   const info    = document.getElementById('v-match-info');
@@ -274,9 +283,11 @@ function _vApplyMatch(gi, match) {
   const status  = V.progress[photo.path] || 'unknown';
 
   if (match) {
+    const conf = _matchConfidence(match.method);
     chip.textContent = 'FOUND';
     chip.className   = 'chip chip-ok';
-    info.textContent = 'via ' + (match.method || '');
+    info.innerHTML   = 'via <strong>' + (match.method || '') + '</strong>' +
+      (conf.label ? ' &nbsp;<span class="conf-badge ' + conf.cls + '">' + conf.label + '</span>' : '');
     deepBtn.style.display = 'none';
     _vShowDest(match.path, match.method);
     document.getElementById('v-dest-meta').textContent =
@@ -442,7 +453,7 @@ async function vScanAll() {
     if (!r.ok) { alert('Scan error: ' + (r.msg || 'unknown')); break; }
     for (const res of r.results) {
       V.progress[res.path] = res.status;
-      if (res.status === 'found' && res.match_path) {
+      if (res.match_path) {
         V.matchCache[res.i] = {method: res.method, path: res.match_path, n: res.match_n || 1};
       }
     }

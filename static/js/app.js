@@ -3,7 +3,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(name + '-panel').classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
-  if (name === 'index')   { idxRefreshList(); }
+  if (name === 'index')   { idxRefreshList(); pmLoad(); }
   if (name === 'verify')  { vOnTabActivate(); }
 }
 
@@ -23,6 +23,7 @@ async function init() {
   const s = await get('/api/state');
   updateIndexChip(s.active_index_meta);
   switchTab('index');
+  pmLoad();
 }
 
 window.addEventListener('load', init);

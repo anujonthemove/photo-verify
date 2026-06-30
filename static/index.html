@@ -16,9 +16,10 @@
   <div class="tab-switcher">
     <button class="tab-btn active" id="tab-index"   onclick="switchTab('index')">Index</button>
     <button class="tab-btn"        id="tab-verify"  onclick="switchTab('verify')">Verify</button>
-    <button class="tab-btn"        id="tab-analyze"  onclick="switchTab('analyze')">Analyze</button>
-    <button class="tab-btn"        id="tab-compare"  onclick="switchTab('compare')">Compare</button>
-    <button class="tab-btn"        id="tab-browse"   onclick="switchTab('browse')">Live Photo Browse</button>
+    <button class="tab-btn"        id="tab-browse"  onclick="switchTab('browse')">Live Photo Browse</button>
+    <span class="tab-divider"></span>
+    <button class="tab-btn"        id="tab-compare" onclick="switchTab('compare')">Compare</button>
+    <button class="tab-btn"        id="tab-analyze" onclick="switchTab('analyze')">Analyze</button>
   </div>
   <div id="active-index-chip" class="chip chip-muted" style="display:none" title=""></div>
   <button id="btn-shutdown" onclick="appShutdown()" title="Stop server">⏻</button>
@@ -40,16 +41,40 @@
       <input id="idx-folder" type="text" placeholder="E:\Photos\Master\DCIM" autocomplete="off">
     </div>
     <button id="btn-build-index" onclick="buildIndex()">Build Index</button>
-    <button id="btn-abort-index" class="danger" onclick="abortIndex()" style="display:none">■ Stop</button>
+    <button id="btn-abort-index" onclick="abortIndex()" style="display:none">■ Stop</button>
     <div id="idx-build-progress">
       <div id="idx-build-bar-wrap"><div id="idx-build-bar"></div></div>
-      <div id="idx-build-msg"></div>
+      <div id="idx-build-msg-row">
+        <span id="idx-build-msg"></span>
+        <span id="idx-build-count"></span>
+      </div>
     </div>
   </div>
 
   <div class="idx-section">
     <h3>Saved Indexes <button class="idx-refresh-btn" onclick="idxRefreshList()" title="Refresh">↺</button></h3>
     <div id="idx-list"><div class="idx-empty">No indexes yet.</div></div>
+  </div>
+
+  <div class="idx-section">
+    <h3>Path Mappings</h3>
+    <p style="color:var(--muted2);font-size:.82rem;margin-bottom:14px;margin-top:-8px">
+      When an index was built with <code style="font-family:var(--mono);font-size:.8em;color:var(--text)">Z:\Photos</code>
+      but the drive is now at <code style="font-family:var(--mono);font-size:.8em;color:var(--text)">Y:\Photos</code>
+      or <code style="font-family:var(--mono);font-size:.8em;color:var(--text)">/mnt/photos</code>,
+      add a mapping. Applied in-memory only — the index JSON is never modified.
+    </p>
+    <div id="pm-list"></div>
+    <div class="idx-form-row" style="margin-top:10px">
+      <label>From</label>
+      <input id="pm-from" type="text" placeholder="Z:\Photos  (stored prefix)" autocomplete="off">
+    </div>
+    <div class="idx-form-row">
+      <label>To</label>
+      <input id="pm-to" type="text" placeholder="Y:\Photos  or  /mnt/photos" autocomplete="off"
+             onkeydown="if(event.key==='Enter')pmAdd()">
+    </div>
+    <button id="btn-pm-add" onclick="pmAdd()">＋ Add Mapping</button>
   </div>
 
 </div>
@@ -183,7 +208,7 @@
 <div id="analyze-panel" class="tab-panel">
   <div class="idx-section">
     <h3>Folder Analyzer</h3>
-    <p style="color:var(--c-muted);font-size:.85rem;margin-bottom:16px">
+    <p style="color:var(--muted2);font-size:.85rem;margin-bottom:16px">
       Scan any folder and get a full report of file types, sizes, categories, and more.
     </p>
     <div class="idx-form-row">
@@ -195,11 +220,11 @@
 
     <div id="az-progress" style="display:none;margin-top:16px">
       <div id="idx-build-bar-wrap" style="margin-bottom:8px"><div id="az-bar"></div></div>
-      <div id="az-msg" style="font-size:.82rem;color:var(--c-muted)"></div>
+      <div id="az-msg" style="font-size:.82rem;color:var(--muted2)"></div>
     </div>
 
     <div id="az-result" style="display:none;margin-top:20px">
-      <div id="az-summary" style="font-size:.85rem;color:var(--c-muted);margin-bottom:12px"></div>
+      <div id="az-summary" style="font-size:.85rem;color:var(--muted2);margin-bottom:12px"></div>
       <button id="btn-az-open" onclick="azOpenReport()">Open Report ↗</button>
     </div>
   </div>
@@ -211,7 +236,7 @@
 <div id="compare-panel" class="tab-panel">
   <div class="idx-section">
     <h3>Compare Folders</h3>
-    <p style="color:var(--c-muted);font-size:.85rem;margin-bottom:18px">
+    <p style="color:var(--muted2);font-size:.85rem;margin-bottom:18px">
       Set a master folder and one or more backups to find what files the master is missing.
       Matching is strict: same filename <em>and</em> same byte size.
       Media, databases, and cache files are excluded — targets Documents, Audio, and Archives.
@@ -235,16 +260,16 @@
 
     <div id="cz-progress" style="display:none;margin-top:4px">
       <div id="idx-build-bar-wrap" style="margin-bottom:8px"><div id="cz-bar"></div></div>
-      <div id="cz-msg" style="font-size:.82rem;color:var(--c-muted)"></div>
+      <div id="cz-msg" style="font-size:.82rem;color:var(--muted2)"></div>
     </div>
 
     <div id="cz-result" style="display:none;margin-top:20px">
-      <div id="cz-summary" style="font-size:.85rem;color:var(--c-muted);margin-bottom:12px"></div>
+      <div id="cz-summary" style="font-size:.85rem;color:var(--muted2);margin-bottom:12px"></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button id="btn-cz-open" onclick="czOpenReport()">Open Report ↗</button>
         <button id="btn-cz-save" onclick="czSaveMissing()">Save Missing Files</button>
       </div>
-      <div id="cz-save-msg" style="font-size:.82rem;color:var(--c-muted);margin-top:10px"></div>
+      <div id="cz-save-msg" style="font-size:.82rem;color:var(--muted2);margin-top:10px"></div>
     </div>
   </div>
 </div>
@@ -297,7 +322,7 @@
         <button class="nav-btn" id="btn-br-prev" onclick="brNavigate(-1)" disabled>◀</button>
         <span   id="br-nav-counter">— / —</span>
         <button class="nav-btn" id="btn-br-next" onclick="brNavigate(1)"  disabled>▶</button>
-        <span   id="br-viewer-meta" style="margin-left:16px;font-size:.82rem;color:var(--c-muted)"></span>
+        <span   id="br-viewer-meta" style="margin-left:16px;font-size:.82rem;color:var(--muted2)"></span>
       </div>
     </div>
 

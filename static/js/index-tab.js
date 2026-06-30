@@ -1,5 +1,56 @@
 let _idxPollTimer = null;
 
+// ── Path Mappings ─────────────────────────────────────────────────────────────
+
+let _pmMappings = [];
+
+async function pmLoad() {
+  const r = await get('/api/settings');
+  _pmMappings = (r.path_mappings || []).slice();
+  _pmRender();
+}
+
+function _pmRender() {
+  const el = document.getElementById('pm-list');
+  if (!_pmMappings.length) {
+    el.innerHTML = '<div class="idx-empty" style="margin-bottom:0;font-size:.82rem">No mappings — indexes use their stored paths.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="pm-table">
+    <thead><tr><th>From (stored)</th><th>To (current)</th><th></th></tr></thead>
+    <tbody>${_pmMappings.map((m, i) => `
+      <tr>
+        <td class="pm-cell">${esc(m.from)}</td>
+        <td class="pm-cell">${esc(m.to)}</td>
+        <td><button class="pm-del-btn" onclick="pmRemove(${i})">✕</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+function pmAdd() {
+  const f = document.getElementById('pm-from').value.trim();
+  const t = document.getElementById('pm-to').value.trim();
+  if (!f) { alert('Enter a "From" prefix.'); return; }
+  _pmMappings.push({ from: f, to: t });
+  document.getElementById('pm-from').value = '';
+  document.getElementById('pm-to').value   = '';
+  _pmRender();
+  pmSave();
+}
+
+function pmRemove(i) {
+  _pmMappings.splice(i, 1);
+  _pmRender();
+  pmSave();
+}
+
+async function pmSave() {
+  const r = await post('/api/settings/path_mappings', { mappings: _pmMappings });
+  if (!r.ok) { alert('Failed to save mappings: ' + r.msg); }
+}
+
+// ── Index list ────────────────────────────────────────────────────────────────
+
 async function idxRefreshList() {
   const r = await get('/api/list_indexes');
   const el = document.getElementById('idx-list');
@@ -71,6 +122,7 @@ async function buildIndex() {
 }
 
 async function abortIndex() {
+  if (!confirm('Stop the index build? Progress will be lost.')) return;
   await post('/api/abort_index', {});
   document.getElementById('btn-abort-index').style.display = 'none';
 }
@@ -81,6 +133,12 @@ async function idxPollProgress() {
   const pct = s.total > 0 ? Math.round(s.current / s.total * 100) : 0;
   document.getElementById('idx-build-bar').style.width = pct + '%';
   document.getElementById('idx-build-msg').textContent = s.msg || '';
+  const countEl = document.getElementById('idx-build-count');
+  if (countEl) {
+    countEl.textContent = (s.phase === 'building' && s.total > 0)
+      ? `${s.current.toLocaleString()} / ${s.total.toLocaleString()} files`
+      : '';
+  }
   if (s.phase === 'done' || s.phase === 'error') {
     clearInterval(_idxPollTimer);
     _idxPollTimer = null;
